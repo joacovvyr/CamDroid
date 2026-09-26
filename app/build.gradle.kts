@@ -7,6 +7,7 @@ android { namespace = "com.joacovvyr.camdroid"; compileSdk = 35
 }
 
 dependencies {
+    implementation("com.google.mlkit:segmentation-selfie:16.0.0-beta6")
     implementation("androidx.core:core-ktx:1.15.0")
     implementation("androidx.appcompat:appcompat:1.7.0")
     implementation("androidx.activity:activity-ktx:1.10.0")

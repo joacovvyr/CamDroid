@@ -32,13 +32,17 @@ class MainActivity : AppCompatActivity() {
         val row = LinearLayout(this).apply { gravity = Gravity.CENTER }
         val photo = Button(this).apply { text = "FOTO"; setOnClickListener { if (::controller.isInitialized) controller.takePhoto({ runOnUiThread { Toast.makeText(context, "Foto guardada", Toast.LENGTH_SHORT).show() } }, { error -> runOnUiThread { Toast.makeText(context, error.message, Toast.LENGTH_SHORT).show() } }) } }
         val video = Button(this).apply { text = "VIDEO"; setOnClickListener { if (::controller.isInitialized) controller.toggleVideo { text = if (it) "DETENER" else "VIDEO" } } }
-        val blur = Button(this).apply { text = "BLUR IA (pendiente)"; isEnabled = false }
+        val blur = Button(this).apply { text = "RETRATO IA"; setOnClickListener { if (::controller.isInitialized) controller.recording?.stop(); startActivity(android.content.Intent(this@MainActivity, PortraitActivity::class.java)) } }
         row.addView(photo); row.addView(video); row.addView(blur); controls.addView(intensity); controls.addView(row)
         val root = FrameLayout(this); root.addView(preview, FrameLayout.LayoutParams(-1, -1)); root.addView(controls, FrameLayout.LayoutParams(-1, -2, Gravity.BOTTOM)); setContentView(root)
         previewId = preview.id
     }
 
     private var previewId: Int = View.NO_ID
+    override fun onResume() {
+        super.onResume()
+        if (androidx.core.content.ContextCompat.checkSelfPermission(this, Manifest.permission.CAMERA) == android.content.pm.PackageManager.PERMISSION_GRANTED) startCamera()
+    }
     private fun startCamera() { val preview = findViewById<PreviewView>(previewId); if (preview == null) return; controller = CameraController(this, executor); controller.bind(Preview.Builder().build().also { it.surfaceProvider = preview.surfaceProvider }, CameraSelector.DEFAULT_BACK_CAMERA) {} }
     override fun onStop() { if (::controller.isInitialized) controller.recording?.stop(); super.onStop() }
     override fun onDestroy() { executor.shutdown(); super.onDestroy() }
