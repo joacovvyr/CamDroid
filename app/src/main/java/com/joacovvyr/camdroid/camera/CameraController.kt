@@ -26,6 +26,7 @@ class CameraController(private val context: Context, private val executor: Execu
     fun bind(preview: Preview, selector: CameraSelector, onReady: () -> Unit) {
         val future = ProcessCameraProvider.getInstance(context)
         future.addListener({
+            try {
             val provider = future.get()
             val capture = ImageCapture.Builder().setCaptureMode(ImageCapture.CAPTURE_MODE_MINIMIZE_LATENCY).build()
             val recorder = Recorder.Builder().setQualitySelector(QualitySelector.from(Quality.FHD)).build()
@@ -33,6 +34,9 @@ class CameraController(private val context: Context, private val executor: Execu
             provider.unbindAll()
             provider.bindToLifecycle(context as androidx.lifecycle.LifecycleOwner, selector, preview, capture, video)
             imageCapture = capture; videoCapture = video; onReady()
+            } catch (error: Exception) {
+                android.widget.Toast.makeText(context, "No se pudo iniciar la cámara: " + error.message, android.widget.Toast.LENGTH_LONG).show()
+            }
         }, ContextCompat.getMainExecutor(context))
     }
 
