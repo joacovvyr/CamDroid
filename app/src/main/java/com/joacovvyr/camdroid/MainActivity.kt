@@ -28,7 +28,7 @@ class MainActivity : AppCompatActivity() {
     private fun buildUi() {
         val preview = PreviewView(this).apply { id = View.generateViewId(); scaleType = PreviewView.ScaleType.FILL_CENTER }
         val controls = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding(24, 12, 24, 20); setBackgroundColor(0x99000000.toInt()) }
-        val intensity = SeekBar(this).apply { max = 100; progress = 50; visibility = SeekBar.GONE; setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener { override fun onProgressChanged(s: SeekBar?, p: Int, f: Boolean) { pipeline.setBlurIntensity(p / 100f) }; override fun onStartTrackingTouch(s: SeekBar?) {}; override fun onStopTrackingTouch(s: SeekBar?) {} }) }
+        val intensity = SeekBar(this).apply { max = 100; progress = 50; visibility = SeekBar.GONE; setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener { override fun onProgressChanged(s: SeekBar?, p: Int, f: Boolean) { pipeline.updateBlurIntensity(p / 100f) }; override fun onStartTrackingTouch(s: SeekBar?) {}; override fun onStopTrackingTouch(s: SeekBar?) {} }) }
         val row = LinearLayout(this).apply { gravity = Gravity.CENTER }
         val photo = Button(this).apply { text = "FOTO"; setOnClickListener { if (::controller.isInitialized) controller.takePhoto({ runOnUiThread { Toast.makeText(context, "Foto guardada", Toast.LENGTH_SHORT).show() } }, { error -> runOnUiThread { Toast.makeText(context, error.message, Toast.LENGTH_SHORT).show() } }) } }
         val video = Button(this).apply { text = "VIDEO"; setOnClickListener { if (::controller.isInitialized) controller.toggleVideo { text = if (it) "DETENER" else "VIDEO" } } }
