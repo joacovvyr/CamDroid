@@ -1,8 +1,23 @@
 # CamDroid
 
-Base V1 de una cámara Android con procesamiento local.
+Prototipo de cámara Android con segmentación de personas 100% local.
 
-Base inicial con preview CameraX, captura de fotos y grabación de video FHD. Las capturas se guardan en el almacenamiento externo privado de la app y se eliminan al desinstalarla. El blur todavía no está implementado y su botón está deshabilitado. EffectPipeline es únicamente una estructura de configuración; no procesa imágenes todavía.
+Abrir **RETRATO IA** para usar el modelo de segmentación incluido en el APK. No requiere descargas, cuenta ni API key. El manifiesto elimina el permiso de Internet, incluso si una dependencia intenta agregarlo.
+
+El modo retrato incluye cámara frontal/trasera, intensidad de blur de 0 a 100%, máscara visible de diagnóstico y foto del resultado GPU. La máscara y la imagen pertenecen al mismo frame. STREAM_MODE estabiliza la segmentación y el shader conserva la persona al difuminar el fondo. La interfaz PersonSegmenter permite reemplazar el modelo.
+
+En Android 10+ las fotos IA aparecen en Pictures/CamDroid. En Android 8/9 se guardan en el directorio privado externo de la app. Las fotos y videos del modo cámara original también se guardan en ese directorio privado y se eliminan al desinstalar.
+
+### Límites actuales
+
+- Preview IA solicitado a 640×480; CameraX negocia la resolución disponible. La interfaz muestra dimensiones, tiempo total y FPS de resultados.
+- La foto IA captura el preview renderizado; no es una foto de sensor a resolución completa.
+- El video del modo original no tiene efectos IA. El modo retrato no graba video.
+- Hay copias CPU→GPU y nuevas imágenes por frame. Es una primera implementación comprobable, pendiente de optimización y mediciones térmicas.
+- La segmentación de personas no es un mapa de profundidad y puede fallar en pelo, objetos o poca luz.
+- El SDK de segmentación es beta. No hay denoise, enhance ni upscale neuronal implementados.
+
+Motor usado: [ML Kit Selfie Segmentation, modelo incluido](https://developers.google.com/ml-kit/vision/selfie-segmentation/android).
 
 ## Abrir
 
@@ -10,7 +25,16 @@ Requiere JDK 17, Gradle 8.9 y Android SDK 35. Compilar con `gradle assembleDebug
 
 ## Próximos incrementos
 
-- Segmentación local de persona con máscara temporal.
-- Render GPU del blur usando `CameraEffect`/OpenGL.
+- Integración del efecto con video y captura de sensor.
+- Mejorar bordes, reutilizar buffers y medir GPU/latencia/temperatura en teléfonos reales.
 - Selectores reales de resolución y FPS según capacidades del dispositivo.
 - Modelos LiteRT locales para denoise, enhance y upscale.
+
+## Prueba en teléfono
+
+1. Activar modo avión antes de abrir por primera vez y entrar a Retrato IA.
+2. Mostrar la máscara: la persona debe aparecer blanca y el fondo oscuro.
+3. Comparar intensidad 0%/100%, mover la cabeza/manos y cambiar de cámara.
+4. Guardar una foto y comprobar orientación, espejo y efecto.
+5. Enviar a segundo plano, volver, salir del modo IA y entrar otra vez.
+6. Observar FPS y temperatura durante varios minutos. Registrar modelo del teléfono y versión de Android.

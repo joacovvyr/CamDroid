@@ -233,7 +233,7 @@ class PortraitActivity : AppCompatActivity() {
         active = false; generation++
         saving = false
         analyzer?.clearAnalyzer(); provider?.unbindAll()
-        renderer.onPause(); renderer.discardPending()
+        renderer.cancelCapture(); renderer.onPause(); renderer.discardPending()
         super.onPause()
     }
     override fun onDestroy() {

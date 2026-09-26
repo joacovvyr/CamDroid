@@ -49,6 +49,7 @@ class PortraitRenderer(context: Context) : GLSurfaceView(context), GLSurfaceView
         queueEvent { if (frameWidth > 0) shot = callback }
         requestRender()
     }
+    fun cancelCapture() { queueEvent { shot = null } }
     override fun onSurfaceCreated(gl: GL10?, config: EGLConfig?) {
         frameWidth = 0
         program = glCreateProgram()
