@@ -2,11 +2,11 @@
 
 Base V1 de una cámara Android con procesamiento local.
 
-Incluye preview CameraX, captura de fotos, grabación de video, selector inicial de calidad FHD y un control de intensidad para el efecto de blur. `EffectPipeline` es la frontera para añadir segmentación de persona, shaders GPU y modelos LiteRT sin acoplarlos a la UI.
+Base inicial con preview CameraX, captura de fotos y grabación de video FHD. Las capturas se guardan en el almacenamiento externo privado de la app y se eliminan al desinstalarla. El blur todavía no está implementado y su botón está deshabilitado. EffectPipeline es únicamente una estructura de configuración; no procesa imágenes todavía.
 
 ## Abrir
 
-Abrir la carpeta en Android Studio Hedgehog o posterior y ejecutar en un dispositivo Android 8.0+ con permisos de cámara y micrófono.
+Requiere JDK 17, Gradle 8.9 y Android SDK 35. Compilar con `gradle assembleDebug lintDebug`. GitHub Actions ejecuta estos pasos y publica el APK de prueba como artefacto CamDroid-debug cuando la compilación termina correctamente. El permiso de micrófono es opcional. Todavía requiere pruebas en un teléfono real.
 
 ## Próximos incrementos
 

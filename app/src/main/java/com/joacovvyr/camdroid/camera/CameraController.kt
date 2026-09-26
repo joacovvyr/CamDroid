@@ -45,13 +45,20 @@ class CameraController(private val context: Context, private val executor: Execu
         })
     }
 
+    @android.annotation.SuppressLint("MissingPermission")
     fun toggleVideo(onState: (Boolean) -> Unit) {
         val capture = videoCapture ?: return
         recording?.let { it.stop(); recording = null; onState(false); return }
         val file = File(context.getExternalFilesDir("movies"), "CamDroid_${System.currentTimeMillis()}.mp4")
-        recording = capture.output.prepareRecording(context, FileOutputOptions.Builder(file).build())
-            .withAudioEnabled().start(ContextCompat.getMainExecutor(context)) { event ->
+        val pending = capture.output.prepareRecording(context, FileOutputOptions.Builder(file).build())
+        if (ContextCompat.checkSelfPermission(context, android.Manifest.permission.RECORD_AUDIO) == android.content.pm.PackageManager.PERMISSION_GRANTED) pending.withAudioEnabled()
+        recording = pending.start(ContextCompat.getMainExecutor(context)) { event ->
                 if (event is VideoRecordEvent.Start) onState(true)
+                if (event is VideoRecordEvent.Finalize) {
+                    recording = null
+                    onState(false)
+                    android.widget.Toast.makeText(context, if (event.hasError()) "Error de video: ${event.error}" else "Video guardado", android.widget.Toast.LENGTH_LONG).show()
+                }
             }
     }
 }
