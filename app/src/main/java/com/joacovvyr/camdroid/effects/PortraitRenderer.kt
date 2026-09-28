@@ -5,6 +5,7 @@ import android.graphics.Bitmap
 import android.opengl.GLES20.*
 import android.opengl.GLSurfaceView
 import android.opengl.GLUtils
+import android.view.MotionEvent
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
 import javax.microedition.khronos.egl.EGLConfig
@@ -15,6 +16,11 @@ class PortraitRenderer(context: Context) : GLSurfaceView(context), GLSurfaceView
     @Volatile var intensity = 0.65f
     @Volatile var maskOnly = false
     @Volatile var lensProfile = VirtualLensProfile.NATURAL
+    @Volatile private var focusX = 0.5f
+    @Volatile private var focusY = 0.5f
+    @Volatile private var focusEnabled = false
+    @Volatile var onFocusTargetChanged: ((Float, Float) -> Unit)? = null
+    @Volatile var onPhysicalFocusPointChanged: ((Float, Float) -> Unit)? = null
     private var pending: Pair<Bitmap, Bitmap>? = null
     private var program = 0
     private val textures = IntArray(2)
@@ -51,6 +57,45 @@ class PortraitRenderer(context: Context) : GLSurfaceView(context), GLSurfaceView
         requestRender()
     }
     fun cancelCapture() { queueEvent { shot = null } }
+    fun clearFocusTarget() {
+        focusEnabled = false
+        requestRender()
+    }
+
+    private fun setFocusTarget(x: Float, y: Float) {
+        focusX = x.coerceIn(0f, 1f)
+        focusY = y.coerceIn(0f, 1f)
+        focusEnabled = true
+        onFocusTargetChanged?.invoke(focusX, focusY)
+        requestRender()
+    }
+
+    override fun onTouchEvent(event: MotionEvent): Boolean {
+        if (event.actionMasked == MotionEvent.ACTION_UP && frameWidth > 0 && width > 0 && height > 0) {
+            val scale = minOf(width.toFloat() / frameWidth, height.toFloat() / frameHeight)
+            val imageWidth = frameWidth * scale
+            val imageHeight = frameHeight * scale
+            val left = (width - imageWidth) * 0.5f
+            val top = (height - imageHeight) * 0.5f
+            if (event.x in left..(left + imageWidth) && event.y in top..(top + imageHeight)) {
+                setFocusTarget(
+                    (event.x - left) / imageWidth,
+                    (event.y - top) / imageHeight
+                )
+                onPhysicalFocusPointChanged?.invoke(
+                    (event.x / width.toFloat()).coerceIn(0f, 1f),
+                    (event.y / height.toFloat()).coerceIn(0f, 1f)
+                )
+            }
+            performClick()
+        }
+        return true
+    }
+
+    override fun performClick(): Boolean {
+        super.performClick()
+        return true
+    }
     override fun onSurfaceCreated(gl: GL10?, config: EGLConfig?) {
         frameWidth = 0
         program = glCreateProgram()
@@ -79,27 +124,38 @@ class PortraitRenderer(context: Context) : GLSurfaceView(context), GLSurfaceView
             uniform float strength;
             uniform float cropScale;
             uniform float blurScale;
+            uniform vec2 focusPoint;
+            uniform float focusEnabled;
             uniform float debugMask;
             void main() {
                 vec2 lensUv = clamp((uv - 0.5) / cropScale + 0.5, 0.0, 1.0);
+                vec2 focusSourceUv = clamp((focusPoint - 0.5) * cropScale + 0.5, 0.0, 1.0);
                 vec4 original = texture2D(cameraFrame, lensUv);
                 float person = smoothstep(0.2, 0.85, texture2D(personMask, lensUv).r);
+                float target = focusEnabled > 0.5 ? smoothstep(0.30, 0.06, distance(uv, focusPoint)) : 0.0;
+                float keep = max(person, target);
                 vec4 blurred = vec4(0.0);
                 float weights = 0.0;
                 for (int x = -3; x <= 3; x++) {
                     for (int y = -3; y <= 3; y++) {
                         vec2 delta = vec2(float(x), float(y));
                         vec2 sampleUv = clamp(lensUv + delta * texel * strength * blurScale * 5.0, 0.0, 1.0);
-                        float background = 1.0 - smoothstep(0.2, 0.85, texture2D(personMask, sampleUv).r);
+                        float samplePerson = smoothstep(0.2, 0.85, texture2D(personMask, sampleUv).r);
+                        float sampleTarget = focusEnabled > 0.5 ? smoothstep(0.30, 0.06, distance(sampleUv, focusSourceUv)) : 0.0;
+                        float background = 1.0 - max(samplePerson, sampleTarget);
                         float weight = exp(-dot(delta, delta) / 6.0) * background;
                         blurred += texture2D(cameraFrame, sampleUv) * weight;
                         weights += weight;
                     }
                 }
                 vec4 backgroundColor = weights > 0.001 ? blurred / weights : original;
-                vec4 result = mix(backgroundColor, original, person);
+                vec4 result = mix(backgroundColor, original, keep);
                 if (strength < 0.001) result = original;
-                gl_FragColor = debugMask > 0.5 ? vec4(vec3(person), 1.0) : vec4(result.rgb, 1.0);
+                float ring = focusEnabled > 0.5
+                    ? 1.0 - smoothstep(0.0, 0.014, abs(distance(uv, focusPoint) - 0.16))
+                    : 0.0;
+                vec3 outputColor = mix(result.rgb, vec3(1.0, 0.78, 0.12), ring * 0.85);
+                gl_FragColor = debugMask > 0.5 ? vec4(vec3(keep), 1.0) : vec4(outputColor, 1.0);
             }
         """)
         glAttachShader(program, vertex); glAttachShader(program, fragment); glLinkProgram(program)
@@ -145,6 +201,8 @@ class PortraitRenderer(context: Context) : GLSurfaceView(context), GLSurfaceView
         glUniform1f(glGetUniformLocation(program,"strength"),intensity)
         glUniform1f(glGetUniformLocation(program,"cropScale"),lensProfile.cropScale)
         glUniform1f(glGetUniformLocation(program,"blurScale"),lensProfile.blurScale)
+        glUniform2f(glGetUniformLocation(program,"focusPoint"),focusX,focusY)
+        glUniform1f(glGetUniformLocation(program,"focusEnabled"),if (focusEnabled) 1f else 0f)
         glUniform1f(glGetUniformLocation(program,"debugMask"),if (maskOnly && shot == null) 1f else 0f)
         val position = glGetAttribLocation(program,"position")
         glEnableVertexAttribArray(position)
