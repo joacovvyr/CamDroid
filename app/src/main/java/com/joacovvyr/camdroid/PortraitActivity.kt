@@ -151,7 +151,7 @@ class PortraitActivity : AppCompatActivity() {
         }
         options.setCaptureRequestOption(CaptureRequest.CONTROL_AWB_MODE, proState.whiteBalanceMode)
         proState.targetFps?.let { fps ->
-            options.setCaptureRequestOption(CaptureRequest.CONTROL_AE_TARGET_FPS_RANGE, Range(fps, fps))
+            options.setCaptureRequestOption(CaptureRequest.CONTROL_AE_TARGET_FPS_RANGE, Range<Int>(fps, fps))
         }
         interop.setCaptureRequestOptions(options.build())
         currentCamera.cameraControl.setZoomRatio(proState.zoomRatio.coerceIn(1f, zoomMax))
@@ -232,7 +232,8 @@ class PortraitActivity : AppCompatActivity() {
             gravity = Gravity.CENTER_VERTICAL
             addView(proButton("AE AUTO") { setAutoExposure() }, LinearLayout.LayoutParams(0, dp(42), 1f))
             addView(proButton("AF AUTO") { setAutoFocus() }, LinearLayout.LayoutParams(0, dp(42), 1f).apply { marginStart = dp(6) })
-            val torch = proButton("LINTERNA") { proState.torchEnabled = !proState.torchEnabled; text = if (proState.torchEnabled) "LINTERNA ON" else "LINTERNA"; applyProCameraState() }
+            lateinit var torch: Button
+            torch = proButton("LINTERNA") { proState.torchEnabled = !proState.torchEnabled; text = if (proState.torchEnabled) "LINTERNA ON" else "LINTERNA"; applyProCameraState() }
             addView(torch, LinearLayout.LayoutParams(0, dp(42), 1f).apply { marginStart = dp(6) })
         }
         proPanel.addView(caption("CONTROL MANUAL · Camera2", 13f)); proPanel.addView(proActions)
