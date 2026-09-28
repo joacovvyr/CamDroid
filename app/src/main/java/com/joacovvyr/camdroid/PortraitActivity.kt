@@ -20,6 +20,7 @@ import androidx.camera.lifecycle.ProcessCameraProvider
 import androidx.core.content.ContextCompat
 import com.joacovvyr.camdroid.effects.LocalPortraitEngine
 import com.joacovvyr.camdroid.effects.PortraitRenderer
+import com.joacovvyr.camdroid.effects.VirtualLensProfile
 import java.io.File
 import java.util.concurrent.Executors
 import java.util.concurrent.atomic.AtomicBoolean
@@ -59,12 +60,30 @@ class PortraitActivity : AppCompatActivity() {
             text = "RETRATO IA · Sin conexión"; textSize = 20f; setTextColor(-1)
         }
         val label = TextView(this).apply { text = "Desenfoque: 65%"; setTextColor(-1) }
+        val lensLabel = TextView(this).apply {
+            text = "Objetivo virtual"
+            setTextColor(-1)
+        }
+        val lensSelector = Spinner(this).apply {
+            adapter = ArrayAdapter(
+                this@PortraitActivity,
+                android.R.layout.simple_spinner_item,
+                VirtualLensProfile.values().map { it.label }
+            ).also { it.setDropDownViewResource(android.R.layout.simple_spinner_dropdown_item) }
+            onItemSelectedListener = object : AdapterView.OnItemSelectedListener {
+                override fun onNothingSelected(parent: AdapterView<*>?) = Unit
+                override fun onItemSelected(parent: AdapterView<*>?, view: android.view.View?, position: Int, id: Long) {
+                    renderer.lensProfile = VirtualLensProfile.values()[position]
+                    renderer.requestRender()
+                }
+            }
+        }
         val strength = SeekBar(this).apply {
             max = 100; progress = 65
             setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
                 override fun onProgressChanged(bar: SeekBar?, value: Int, user: Boolean) {
                     renderer.intensity = value / 100f
-                    label.text = "Desenfoque: $value%"
+                    label.text = "Desenfoque: ${value}%"
                     renderer.requestRender()
                 }
                 override fun onStartTrackingTouch(bar: SeekBar?) {}
@@ -96,10 +115,10 @@ class PortraitActivity : AppCompatActivity() {
             addView(capture, LinearLayout.LayoutParams(0,-2,1f))
             addView(flip, LinearLayout.LayoutParams(0,-2,1f))
         }
-        controls.addView(title); controls.addView(status); controls.addView(label)
+        controls.addView(title); controls.addView(status); controls.addView(lensLabel); controls.addView(lensSelector); controls.addView(label)
         controls.addView(strength); controls.addView(mask); controls.addView(row)
         controls.addView(TextView(this).apply {
-            text = "Foto del preview procesado · Video IA todavía no disponible"
+            text = "Perfil de lente simulado · Objetivo IA actual: persona · Video IA todavía no disponible"
             setTextColor(0xffb7c1cc.toInt()); textSize = 12f
         })
         setContentView(LinearLayout(this).apply {
@@ -176,7 +195,7 @@ class PortraitActivity : AppCompatActivity() {
                                 lastFrame = now
                                 frameReady = true
                                 capture.isEnabled = !renderer.maskOnly && !saving
-                                status.text = "IA local · ${now-started} ms · $fps FPS · $dimensions"
+                                status.text = "IA local · ${now-started} ms · ${fps} FPS · ${dimensions}"
                             }
                         }
                     } catch (error: Exception) {
