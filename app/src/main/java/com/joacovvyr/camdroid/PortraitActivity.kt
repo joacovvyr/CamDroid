@@ -233,7 +233,7 @@ class PortraitActivity : AppCompatActivity() {
             addView(proButton("AE AUTO") { setAutoExposure() }, LinearLayout.LayoutParams(0, dp(42), 1f))
             addView(proButton("AF AUTO") { setAutoFocus() }, LinearLayout.LayoutParams(0, dp(42), 1f).apply { marginStart = dp(6) })
             lateinit var torch: Button
-            torch = proButton("LINTERNA") { proState.torchEnabled = !proState.torchEnabled; text = if (proState.torchEnabled) "LINTERNA ON" else "LINTERNA"; applyProCameraState() }
+            torch = proButton("LINTERNA") { proState.torchEnabled = !proState.torchEnabled; torch.text = if (proState.torchEnabled) "LINTERNA ON" else "LINTERNA"; applyProCameraState() }
             addView(torch, LinearLayout.LayoutParams(0, dp(42), 1f).apply { marginStart = dp(6) })
         }
         proPanel.addView(caption("CONTROL MANUAL · Camera2", 13f)); proPanel.addView(proActions)
