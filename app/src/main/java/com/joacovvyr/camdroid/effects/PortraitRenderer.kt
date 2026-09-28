@@ -14,6 +14,7 @@ import javax.microedition.khronos.opengles.GL10
 class PortraitRenderer(context: Context) : GLSurfaceView(context), GLSurfaceView.Renderer {
     @Volatile var intensity = 0.65f
     @Volatile var maskOnly = false
+    @Volatile var lensProfile = VirtualLensProfile.NATURAL
     private var pending: Pair<Bitmap, Bitmap>? = null
     private var program = 0
     private val textures = IntArray(2)
@@ -76,16 +77,19 @@ class PortraitRenderer(context: Context) : GLSurfaceView(context), GLSurfaceView
             uniform sampler2D personMask;
             uniform vec2 texel;
             uniform float strength;
+            uniform float cropScale;
+            uniform float blurScale;
             uniform float debugMask;
             void main() {
-                vec4 original = texture2D(cameraFrame, uv);
-                float person = smoothstep(0.2, 0.85, texture2D(personMask, uv).r);
+                vec2 lensUv = clamp((uv - 0.5) / cropScale + 0.5, 0.0, 1.0);
+                vec4 original = texture2D(cameraFrame, lensUv);
+                float person = smoothstep(0.2, 0.85, texture2D(personMask, lensUv).r);
                 vec4 blurred = vec4(0.0);
                 float weights = 0.0;
                 for (int x = -3; x <= 3; x++) {
                     for (int y = -3; y <= 3; y++) {
                         vec2 delta = vec2(float(x), float(y));
-                        vec2 sampleUv = clamp(uv + delta * texel * strength * 5.0, 0.0, 1.0);
+                        vec2 sampleUv = clamp(lensUv + delta * texel * strength * blurScale * 5.0, 0.0, 1.0);
                         float background = 1.0 - smoothstep(0.2, 0.85, texture2D(personMask, sampleUv).r);
                         float weight = exp(-dot(delta, delta) / 6.0) * background;
                         blurred += texture2D(cameraFrame, sampleUv) * weight;
@@ -139,6 +143,8 @@ class PortraitRenderer(context: Context) : GLSurfaceView(context), GLSurfaceView
         glUniform1i(glGetUniformLocation(program,"personMask"),1)
         glUniform2f(glGetUniformLocation(program,"texel"),1f/frameWidth,1f/frameHeight)
         glUniform1f(glGetUniformLocation(program,"strength"),intensity)
+        glUniform1f(glGetUniformLocation(program,"cropScale"),lensProfile.cropScale)
+        glUniform1f(glGetUniformLocation(program,"blurScale"),lensProfile.blurScale)
         glUniform1f(glGetUniformLocation(program,"debugMask"),if (maskOnly && shot == null) 1f else 0f)
         val position = glGetAttribLocation(program,"position")
         glEnableVertexAttribArray(position)
