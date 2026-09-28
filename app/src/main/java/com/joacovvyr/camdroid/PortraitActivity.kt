@@ -1,4 +1,6 @@
-package com.joacovvyr.camdroid
+import android.annotation.SuppressLint
+p@OptIn(ExperimentalCamera2Interop::class)ackage com.joacovvyr.camdroid
+@SuppressLint("UnsafeOptInUsageError")
 
 import android.Manifest
 import android.content.ContentValues
