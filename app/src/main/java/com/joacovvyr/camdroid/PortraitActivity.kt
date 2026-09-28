@@ -1,7 +1,6 @@
-import android.annotation.SuppressLint
-p@OptIn(ExperimentalCamera2Interop::class)ackage com.joacovvyr.camdroid
-@SuppressLint("UnsafeOptInUsageError")
+package com.joacovvyr.camdroid
 
+import android.annotation.SuppressLint
 import android.Manifest
 import android.content.ContentValues
 import android.content.pm.PackageManager
@@ -42,6 +41,7 @@ import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.TimeUnit
 
 @OptIn(ExperimentalCamera2Interop::class)
+@SuppressLint("UnsafeOptInUsageError")
 class PortraitActivity : AppCompatActivity() {
     private lateinit var renderer: PortraitRenderer
     private lateinit var status: TextView
