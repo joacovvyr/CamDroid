@@ -14,8 +14,11 @@ import android.view.Gravity
 import android.widget.*
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AppCompatActivity
+import androidx.camera.core.Camera
 import androidx.camera.core.CameraSelector
+import androidx.camera.core.FocusMeteringAction
 import androidx.camera.core.ImageAnalysis
+import androidx.camera.core.SurfaceOrientedMeteringPointFactory
 import androidx.camera.lifecycle.ProcessCameraProvider
 import androidx.core.content.ContextCompat
 import com.joacovvyr.camdroid.effects.LocalPortraitEngine
@@ -24,6 +27,7 @@ import com.joacovvyr.camdroid.effects.VirtualLensProfile
 import java.io.File
 import java.util.concurrent.Executors
 import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.TimeUnit
 
 class PortraitActivity : AppCompatActivity() {
     private lateinit var renderer: PortraitRenderer
@@ -35,6 +39,7 @@ class PortraitActivity : AppCompatActivity() {
     private var engineSession = -1
     private var analyzer: ImageAnalysis? = null
     private var provider: ProcessCameraProvider? = null
+    private var camera: Camera? = null
     private val busy = AtomicBoolean(false)
     @Volatile private var active = false
     private var generation = 0
@@ -42,6 +47,7 @@ class PortraitActivity : AppCompatActivity() {
     private var frameReady = false
     private var saving = false
     private var lastFrame = 0L
+    private var focusTargetActive = false
 
     private val permission = registerForActivityResult(ActivityResultContracts.RequestPermission()) {
         if (it) bindCamera() else status.text = "Se necesita permiso de cámara para el retrato IA."
@@ -49,6 +55,24 @@ class PortraitActivity : AppCompatActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         renderer = PortraitRenderer(this)
+        renderer.onFocusTargetChanged = { _, _ ->
+            focusTargetActive = true
+            status.text = "Objetivo IA fijado · enfoque físico activo"
+        }
+        renderer.onPhysicalFocusPointChanged = { x, y ->
+            val currentCamera = camera
+            if (currentCamera != null && renderer.width > 0 && renderer.height > 0) {
+                val factory = SurfaceOrientedMeteringPointFactory(
+                    renderer.width.toFloat(), renderer.height.toFloat()
+                )
+                val point = factory.createPoint(x * renderer.width, y * renderer.height)
+                val action = FocusMeteringAction.Builder(
+                    point,
+                    FocusMeteringAction.FLAG_AF or FocusMeteringAction.FLAG_AE
+                ).setAutoCancelDuration(4, TimeUnit.SECONDS).build()
+                currentCamera.cameraControl.startFocusAndMetering(action)
+            }
+        }
         status = TextView(this).apply {
             setTextColor(-1); text = "Preparando IA local…"; textSize = 15f
         }
@@ -83,7 +107,7 @@ class PortraitActivity : AppCompatActivity() {
             setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
                 override fun onProgressChanged(bar: SeekBar?, value: Int, user: Boolean) {
                     renderer.intensity = value / 100f
-                    label.text = "Desenfoque: ${value}%"
+                    label.text = "Desenfoque: \${value}%"
                     renderer.requestRender()
                 }
                 override fun onStartTrackingTouch(bar: SeekBar?) {}
@@ -108,7 +132,12 @@ class PortraitActivity : AppCompatActivity() {
         }
         val flip = Button(this).apply {
             text = "Cambiar cámara"
-            setOnClickListener { front = !front; bindCamera() }
+            setOnClickListener {
+                front = !front
+                focusTargetActive = false
+                renderer.clearFocusTarget()
+                bindCamera()
+            }
         }
         val row = LinearLayout(this).apply {
             gravity = Gravity.CENTER
@@ -118,7 +147,7 @@ class PortraitActivity : AppCompatActivity() {
         controls.addView(title); controls.addView(status); controls.addView(lensLabel); controls.addView(lensSelector); controls.addView(label)
         controls.addView(strength); controls.addView(mask); controls.addView(row)
         controls.addView(TextView(this).apply {
-            text = "Perfil de lente simulado · Objetivo IA actual: persona · Video IA todavía no disponible"
+            text = "Tocá el objeto que querés priorizar · Video IA todavía no disponible"
             setTextColor(0xffb7c1cc.toInt()); textSize = 12f
         })
         setContentView(LinearLayout(this).apply {
@@ -151,6 +180,7 @@ class PortraitActivity : AppCompatActivity() {
                     selector = if (front) CameraSelector.DEFAULT_FRONT_CAMERA else CameraSelector.DEFAULT_BACK_CAMERA
                 }
                 cameraProvider.unbindAll()
+                camera = null
                 val mirror = front
                 // A single analysis use case avoids unsupported preview/photo/video/analysis combinations.
                 val analysis = ImageAnalysis.Builder()
@@ -185,33 +215,34 @@ class PortraitActivity : AppCompatActivity() {
                             if (!active || session != generation || error != null || mask == null) {
                                 upright.recycle(); mask?.recycle()
                                 if (active && session == generation && error != null) {
-                                    status.text = "Falló la IA local: ${error.localizedMessage}"
+                                    status.text = "Falló la IA local: \${error.localizedMessage}"
                                 }
                             } else {
-                                val dimensions = "${upright.width}×${upright.height}"
+                                val dimensions = "\${upright.width}×\${upright.height}"
                                 renderer.submit(upright,mask)
                                 val now = SystemClock.elapsedRealtime()
                                 val fps = if (lastFrame == 0L) 0 else (1000L/(now-lastFrame).coerceAtLeast(1)).toInt()
                                 lastFrame = now
                                 frameReady = true
                                 capture.isEnabled = !renderer.maskOnly && !saving
-                                status.text = "IA local · ${now-started} ms · ${fps} FPS · ${dimensions}"
+                                val focusLabel = if (focusTargetActive) " · objetivo fijado" else ""
+                                status.text = "IA local · \${now-started} ms · \${fps} FPS · \${dimensions}\${focusLabel}"
                             }
                         }
                     } catch (error: Exception) {
                         proxy.close(); busy.set(false)
-                        runOnUiThread { if (active) status.text = "Error de procesamiento: ${error.localizedMessage}" }
+                        runOnUiThread { if (active) status.text = "Error de procesamiento: \${error.localizedMessage}" }
                     }
                 }
-                cameraProvider.bindToLifecycle(this,selector,analysis)
-            } catch (error: Exception) { status.text = "No se pudo abrir la cámara: ${error.localizedMessage}" }
+                camera = cameraProvider.bindToLifecycle(this,selector,analysis)
+            } catch (error: Exception) { status.text = "No se pudo abrir la cámara: \${error.localizedMessage}" }
         }, ContextCompat.getMainExecutor(this))
     }
     private fun save(bitmap: Bitmap) {
         if (storage.isShutdown) { bitmap.recycle(); return }
         storage.execute {
             try {
-                val name = "CamDroid_IA_${System.currentTimeMillis()}.jpg"
+                val name = "CamDroid_IA_\${System.currentTimeMillis()}.jpg"
                 if (Build.VERSION.SDK_INT >= 29) {
                     val values = ContentValues().apply {
                         put(MediaStore.Images.Media.DISPLAY_NAME,name)
@@ -237,7 +268,7 @@ class PortraitActivity : AppCompatActivity() {
                     File(dir,name).outputStream().use { check(bitmap.compress(Bitmap.CompressFormat.JPEG,95,it)) }
                     notifySaved("Foto IA guardada en la carpeta privada de CamDroid")
                 }
-            } catch (error: Exception) { notifySaved("No se pudo guardar: ${error.localizedMessage}") }
+            } catch (error: Exception) { notifySaved("No se pudo guardar: \${error.localizedMessage}") }
             finally { bitmap.recycle() }
         }
     }
@@ -252,6 +283,7 @@ class PortraitActivity : AppCompatActivity() {
         active = false; generation++
         saving = false
         analyzer?.clearAnalyzer(); provider?.unbindAll()
+        camera = null
         renderer.cancelCapture(); renderer.onPause(); renderer.discardPending()
         super.onPause()
     }
