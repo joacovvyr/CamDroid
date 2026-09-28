@@ -18,7 +18,7 @@ enum class WhiteBalancePreset(val label: String, val cameraMode: Int) {
     AUTO("Auto", CaptureRequest.CONTROL_AWB_MODE_AUTO),
     DAYLIGHT("Día", CaptureRequest.CONTROL_AWB_MODE_DAYLIGHT),
     CLOUDY("Nublado", CaptureRequest.CONTROL_AWB_MODE_CLOUDY_DAYLIGHT),
-    TUNGSTEN("Tungsteno", CaptureRequest.CONTROL_AWB_MODE_TUNGSTEN),
+    TUNGSTEN("Tungsteno", CaptureRequest.CONTROL_AWB_MODE_INCANDESCENT),
     FLUORESCENT("Fluorescente", CaptureRequest.CONTROL_AWB_MODE_FLUORESCENT),
     SHADE("Sombra", CaptureRequest.CONTROL_AWB_MODE_SHADE)
 }
