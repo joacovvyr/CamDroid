@@ -66,7 +66,7 @@ class PortraitActivity : AppCompatActivity() {
     private var exposureRange: Range<Long> = Range(250_000L, 1_000_000_000L)
     private var focusDistanceMax = 10f
     private var zoomMax = 10f
-    private var analysisSize = Size(1280, 720)
+    private var analysisSize = Size(640, 480)
     private val proState = CameraProState()
     private var proControls: LinearLayout? = null
     private lateinit var proToggle: Button
@@ -218,14 +218,14 @@ class PortraitActivity : AppCompatActivity() {
             background = rounded(0xff1a222c.toInt(), 18)
         }
         lateinit var qualityToggle: Button
-        qualityToggle = proButton("MEJORA IA · ACTIVA") {
+        qualityToggle = proButton("MEJORA IA · SUAVE") {
             renderer.qualityEnhancementEnabled = !renderer.qualityEnhancementEnabled
-            qualityToggle.text = if (renderer.qualityEnhancementEnabled) "MEJORA IA · ACTIVA" else "MEJORA IA · DESACTIVADA"
+            qualityToggle.text = if (renderer.qualityEnhancementEnabled) "MEJORA IA · SUAVE" else "MEJORA IA · DESACTIVADA"
             renderer.requestRender()
         }
         qualityPanel.addView(qualityToggle, LinearLayout.LayoutParams(-1, dp(42)))
-        val qualityValue = caption("55%")
-        sliderRow(qualityPanel, "Detalle, color y nitidez en tiempo real", qualityValue, 100, 55) { value ->
+        val qualityValue = caption("25%")
+        sliderRow(qualityPanel, "Detalle, color y nitidez en tiempo real", qualityValue, 100, 25) { value ->
             renderer.qualityEnhancement = value / 100f
             qualityValue.text = "${value}%"
             renderer.requestRender()
@@ -326,11 +326,26 @@ class PortraitActivity : AppCompatActivity() {
                 val analysis = ImageAnalysis.Builder().setTargetResolution(analysisSize).setOutputImageFormat(ImageAnalysis.OUTPUT_IMAGE_FORMAT_RGBA_8888).setBackpressureStrategy(ImageAnalysis.STRATEGY_KEEP_ONLY_LATEST).build()
                 analyzer = analysis
                 analysis.setAnalyzer(worker) { proxy ->
-                    if (!active || session != generation || !busy.compareAndSet(false,true)) { proxy.close(); return@setAnalyzer }
+                    val shouldInfer = busy.compareAndSet(false,true)
+                    if (!active || session != generation) { if (shouldInfer) busy.set(false); proxy.close(); return@setAnalyzer }
                     val started = SystemClock.elapsedRealtime()
                     try {
                         val source = proxy.toBitmap(); val transform = Matrix().apply { postRotate(proxy.imageInfo.rotationDegrees.toFloat()); if (mirror) postScale(-1f,1f) }
                         val upright = Bitmap.createBitmap(source,0,0,source.width,source.height,transform,true); if (upright !== source) source.recycle(); proxy.close()
+                        if (!shouldInfer) {
+                            renderer.submitFrame(upright)
+                            val now = SystemClock.elapsedRealtime()
+                            runOnUiThread {
+                                if (active && session == generation) {
+                                    val fps = if (lastFrame == 0L) 0 else (1000L / (now - lastFrame).coerceAtLeast(1)).toInt()
+                                    lastFrame = now
+                                    frameReady = true
+                                    capture.isEnabled = !renderer.maskOnly && !saving
+                                    status.text = "Vista fluida · ${fps} FPS · ${upright.width}×${upright.height}"
+                                }
+                            }
+                            return@setAnalyzer
+                        }
                         if (engineSession != session) { engine?.close(); engine = LocalPortraitEngine(); engineSession = session }
                         val localEngine = checkNotNull(engine)
                         localEngine.process(upright, ContextCompat.getMainExecutor(this)) { mask, error ->
@@ -341,7 +356,7 @@ class PortraitActivity : AppCompatActivity() {
                                 val dimensions = "${upright.width}×${upright.height}"; renderer.submit(upright,mask); val now = SystemClock.elapsedRealtime(); val fps = if (lastFrame == 0L) 0 else (1000L/(now-lastFrame).coerceAtLeast(1)).toInt(); lastFrame = now; frameReady = true; capture.isEnabled = !renderer.maskOnly && !saving; val focusLabel = if (focusTargetActive) " · objetivo fijado" else ""; status.text = "IA local · ${now-started} ms · ${fps} FPS · ${dimensions}${focusLabel}"
                             }
                         }
-                    } catch (error: Exception) { proxy.close(); busy.set(false); runOnUiThread { if (active) status.text = "Error de procesamiento: ${error.localizedMessage}" } }
+                    } catch (error: Exception) { proxy.close(); if (shouldInfer) busy.set(false); runOnUiThread { if (active) status.text = "Error de procesamiento: ${error.localizedMessage}" } }
                 }
                 camera = cameraProvider.bindToLifecycle(this,selector,analysis); refreshCameraCapabilities(checkNotNull(camera)); applyProCameraState()
             } catch (error: Exception) { status.text = "No se pudo abrir la cámara: ${error.localizedMessage}" }
