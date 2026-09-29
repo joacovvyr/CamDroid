@@ -32,6 +32,19 @@ class PortraitRenderer(context: Context) : GLSurfaceView(context), GLSurfaceView
     private var screenWidth = 1
     private var screenHeight = 1
     private var maskAvailable = false
+    private var positionLocation = -1
+    private var cameraFrameLocation = -1
+    private var personMaskLocation = -1
+    private var texelLocation = -1
+    private var strengthLocation = -1
+    private var cropScaleLocation = -1
+    private var blurScaleLocation = -1
+    private var focusPointLocation = -1
+    private var focusEnabledLocation = -1
+    private var debugMaskLocation = -1
+    private var qualityBoostLocation = -1
+    private var qualityEnabledLocation = -1
+    private var maskAvailableLocation = -1
     private var shot: ((Bitmap) -> Unit)? = null
     private val vertices = ByteBuffer.allocateDirect(8 * 4).order(ByteOrder.nativeOrder())
         .asFloatBuffer().apply { put(floatArrayOf(-1f,-1f, 1f,-1f, -1f,1f, 1f,1f)); position(0) }
@@ -175,10 +188,10 @@ class PortraitRenderer(context: Context) : GLSurfaceView(context), GLSurfaceView
                 float keep = max(person, target);
                 vec4 blurred = vec4(0.0);
                 float weights = 0.0;
-                for (int x = -2; x <= 2; x++) {
-                    for (int y = -2; y <= 2; y++) {
+                for (int x = -1; x <= 1; x++) {
+                    for (int y = -1; y <= 1; y++) {
                         vec2 delta = vec2(float(x), float(y));
-                        vec2 sampleUv = clamp(lensUv + delta * texel * strength * blurScale * 5.0, 0.0, 1.0);
+                        vec2 sampleUv = clamp(lensUv + delta * texel * strength * blurScale * 7.0, 0.0, 1.0);
                         float samplePerson = smoothstep(0.2, 0.85, texture2D(personMask, sampleUv).r);
                         float sampleTarget = focusEnabled > 0.5 ? smoothstep(0.30, 0.06, distance(sampleUv, focusSourceUv)) : 0.0;
                         float background = 1.0 - max(samplePerson, sampleTarget);
@@ -204,6 +217,19 @@ class PortraitRenderer(context: Context) : GLSurfaceView(context), GLSurfaceView
         val linked = IntArray(1); glGetProgramiv(program, GL_LINK_STATUS, linked, 0)
         check(linked[0] != 0) { glGetProgramInfoLog(program) }
         glDeleteShader(vertex); glDeleteShader(fragment)
+        positionLocation = glGetAttribLocation(program, "position")
+        cameraFrameLocation = glGetUniformLocation(program, "cameraFrame")
+        personMaskLocation = glGetUniformLocation(program, "personMask")
+        texelLocation = glGetUniformLocation(program, "texel")
+        strengthLocation = glGetUniformLocation(program, "strength")
+        cropScaleLocation = glGetUniformLocation(program, "cropScale")
+        blurScaleLocation = glGetUniformLocation(program, "blurScale")
+        focusPointLocation = glGetUniformLocation(program, "focusPoint")
+        focusEnabledLocation = glGetUniformLocation(program, "focusEnabled")
+        debugMaskLocation = glGetUniformLocation(program, "debugMask")
+        qualityBoostLocation = glGetUniformLocation(program, "qualityBoost")
+        qualityEnabledLocation = glGetUniformLocation(program, "qualityEnabled")
+        maskAvailableLocation = glGetUniformLocation(program, "maskAvailable")
         glGenTextures(2, textures, 0)
         textures.forEach {
             glBindTexture(GL_TEXTURE_2D, it)
@@ -243,21 +269,20 @@ class PortraitRenderer(context: Context) : GLSurfaceView(context), GLSurfaceView
         glUseProgram(program)
         glActiveTexture(GL_TEXTURE0); glBindTexture(GL_TEXTURE_2D, textures[0])
         glActiveTexture(GL_TEXTURE1); glBindTexture(GL_TEXTURE_2D, textures[1])
-        glUniform1i(glGetUniformLocation(program,"cameraFrame"),0)
-        glUniform1i(glGetUniformLocation(program,"personMask"),1)
-        glUniform2f(glGetUniformLocation(program,"texel"),1f/frameWidth,1f/frameHeight)
-        glUniform1f(glGetUniformLocation(program,"strength"),intensity)
-        glUniform1f(glGetUniformLocation(program,"cropScale"),lensProfile.cropScale)
-        glUniform1f(glGetUniformLocation(program,"blurScale"),lensProfile.blurScale)
-        glUniform2f(glGetUniformLocation(program,"focusPoint"),focusX,focusY)
-        glUniform1f(glGetUniformLocation(program,"focusEnabled"),if (focusEnabled) 1f else 0f)
-        glUniform1f(glGetUniformLocation(program,"debugMask"),if (maskOnly && shot == null) 1f else 0f)
-        glUniform1f(glGetUniformLocation(program,"qualityBoost"), qualityEnhancement.coerceIn(0f, 1f))
-        glUniform1f(glGetUniformLocation(program,"qualityEnabled"), if (qualityEnhancementEnabled) 1f else 0f)
-        glUniform1f(glGetUniformLocation(program,"maskAvailable"), if (maskAvailable) 1f else 0f)
-        val position = glGetAttribLocation(program,"position")
-        glEnableVertexAttribArray(position)
-        glVertexAttribPointer(position,2,GL_FLOAT,false,0,vertices)
+        glUniform1i(cameraFrameLocation,0)
+        glUniform1i(personMaskLocation,1)
+        glUniform2f(texelLocation,1f/frameWidth,1f/frameHeight)
+        glUniform1f(strengthLocation,intensity)
+        glUniform1f(cropScaleLocation,lensProfile.cropScale)
+        glUniform1f(blurScaleLocation,lensProfile.blurScale)
+        glUniform2f(focusPointLocation,focusX,focusY)
+        glUniform1f(focusEnabledLocation,if (focusEnabled) 1f else 0f)
+        glUniform1f(debugMaskLocation,if (maskOnly && shot == null) 1f else 0f)
+        glUniform1f(qualityBoostLocation, qualityEnhancement.coerceIn(0f, 1f))
+        glUniform1f(qualityEnabledLocation, if (qualityEnhancementEnabled) 1f else 0f)
+        glUniform1f(maskAvailableLocation, if (maskAvailable) 1f else 0f)
+        glEnableVertexAttribArray(positionLocation)
+        glVertexAttribPointer(positionLocation,2,GL_FLOAT,false,0,vertices)
         glDrawArrays(GL_TRIANGLE_STRIP,0,4)
         shot?.let { callback ->
             shot = null
