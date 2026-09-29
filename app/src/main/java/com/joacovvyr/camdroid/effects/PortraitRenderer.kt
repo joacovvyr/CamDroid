@@ -17,19 +17,21 @@ class PortraitRenderer(context: Context) : GLSurfaceView(context), GLSurfaceView
     @Volatile var maskOnly = false
     @Volatile var lensProfile = VirtualLensProfile.NATURAL
     @Volatile var qualityEnhancementEnabled = true
-    @Volatile var qualityEnhancement = 0.55f
+    @Volatile var qualityEnhancement = 0.25f
     @Volatile private var focusX = 0.5f
     @Volatile private var focusY = 0.5f
     @Volatile private var focusEnabled = false
     @Volatile var onFocusTargetChanged: ((Float, Float) -> Unit)? = null
     @Volatile var onPhysicalFocusPointChanged: ((Float, Float) -> Unit)? = null
-    private var pending: Pair<Bitmap, Bitmap>? = null
+    private var pendingFrame: Bitmap? = null
+    private var pendingMask: Bitmap? = null
     private var program = 0
     private val textures = IntArray(2)
     private var frameWidth = 0
     private var frameHeight = 0
     private var screenWidth = 1
     private var screenHeight = 1
+    private var maskAvailable = false
     private var shot: ((Bitmap) -> Unit)? = null
     private val vertices = ByteBuffer.allocateDirect(8 * 4).order(ByteOrder.nativeOrder())
         .asFloatBuffer().apply { put(floatArrayOf(-1f,-1f, 1f,-1f, -1f,1f, 1f,1f)); position(0) }
@@ -41,18 +43,32 @@ class PortraitRenderer(context: Context) : GLSurfaceView(context), GLSurfaceView
         preserveEGLContextOnPause = true
     }
     @Synchronized fun submit(frame: Bitmap, mask: Bitmap) {
-        pending?.let { it.first.recycle(); it.second.recycle() }
-        pending = frame to mask
+        pendingMask?.recycle()
+        pendingMask = mask
+        if (pendingFrame == null) {
+            pendingFrame = frame
+        } else {
+            frame.recycle()
+        }
         requestRender()
     }
-    @Synchronized private fun takeFrame(): Pair<Bitmap, Bitmap>? {
-        val value = pending
-        pending = null
+    @Synchronized fun submitFrame(frame: Bitmap) {
+        pendingFrame?.recycle()
+        pendingFrame = frame
+        requestRender()
+    }
+    @Synchronized private fun takeFrame(): Pair<Bitmap?, Bitmap?>? {
+        if (pendingFrame == null) return null
+        val value = pendingFrame to pendingMask
+        pendingFrame = null
+        pendingMask = null
         return value
     }
     @Synchronized fun discardPending() {
-        pending?.let { it.first.recycle(); it.second.recycle() }
-        pending = null
+        pendingFrame?.recycle()
+        pendingMask?.recycle()
+        pendingFrame = null
+        pendingMask = null
     }
     fun capture(callback: (Bitmap) -> Unit) {
         queueEvent { if (frameWidth > 0) shot = callback }
@@ -100,6 +116,7 @@ class PortraitRenderer(context: Context) : GLSurfaceView(context), GLSurfaceView
     }
     override fun onSurfaceCreated(gl: GL10?, config: EGLConfig?) {
         frameWidth = 0
+        maskAvailable = false
         program = glCreateProgram()
         fun shader(type: Int, source: String): Int {
             val id = glCreateShader(type)
@@ -131,6 +148,7 @@ class PortraitRenderer(context: Context) : GLSurfaceView(context), GLSurfaceView
             uniform float debugMask;
             uniform float qualityBoost;
             uniform float qualityEnabled;
+            uniform float maskAvailable;
             vec3 enhanceColor(vec2 sampleUv, vec3 center) {
                 vec2 stepUv = texel * 1.25;
                 vec3 north = texture2D(cameraFrame, clamp(sampleUv + vec2(0.0, stepUv.y), 0.0, 1.0)).rgb;
@@ -139,25 +157,26 @@ class PortraitRenderer(context: Context) : GLSurfaceView(context), GLSurfaceView
                 vec3 west = texture2D(cameraFrame, clamp(sampleUv - vec2(stepUv.x, 0.0), 0.0, 1.0)).rgb;
                 vec3 soft = (center * 2.0 + north + south + east + west) / 6.0;
                 vec3 detail = center - soft;
-                vec3 crisp = mix(center, soft, 0.08 * qualityBoost);
-                crisp += detail * (0.85 + 1.35 * qualityBoost);
+                vec3 crisp = mix(center, soft, 0.025 * qualityBoost);
+                crisp += detail * (0.12 * qualityBoost);
                 float luminance = dot(crisp, vec3(0.2126, 0.7152, 0.0722));
                 vec3 chroma = crisp - vec3(luminance);
-                crisp = vec3(luminance) + chroma * (1.0 + 0.10 * qualityBoost);
-                crisp = (crisp - 0.5) * (1.0 + 0.08 * qualityBoost) + 0.5;
+                crisp = vec3(luminance) + chroma * (1.0 + 0.035 * qualityBoost);
+                crisp = (crisp - 0.5) * (1.0 + 0.025 * qualityBoost) + 0.5;
                 return clamp(crisp, 0.0, 1.0);
             }
             void main() {
                 vec2 lensUv = clamp((uv - 0.5) / cropScale + 0.5, 0.0, 1.0);
                 vec2 focusSourceUv = clamp((focusPoint - 0.5) * cropScale + 0.5, 0.0, 1.0);
                 vec4 original = texture2D(cameraFrame, lensUv);
-                float person = smoothstep(0.2, 0.85, texture2D(personMask, lensUv).r);
+                float maskValue = maskAvailable > 0.5 ? texture2D(personMask, lensUv).r : 1.0;
+                float person = smoothstep(0.2, 0.85, maskValue);
                 float target = focusEnabled > 0.5 ? smoothstep(0.30, 0.06, distance(uv, focusPoint)) : 0.0;
                 float keep = max(person, target);
                 vec4 blurred = vec4(0.0);
                 float weights = 0.0;
-                for (int x = -3; x <= 3; x++) {
-                    for (int y = -3; y <= 3; y++) {
+                for (int x = -2; x <= 2; x++) {
+                    for (int y = -2; y <= 2; y++) {
                         vec2 delta = vec2(float(x), float(y));
                         vec2 sampleUv = clamp(lensUv + delta * texel * strength * blurScale * 5.0, 0.0, 1.0);
                         float samplePerson = smoothstep(0.2, 0.85, texture2D(personMask, sampleUv).r);
@@ -199,12 +218,18 @@ class PortraitRenderer(context: Context) : GLSurfaceView(context), GLSurfaceView
     }
     override fun onDrawFrame(gl: GL10?) {
         takeFrame()?.let { (frame, mask) ->
-            frameWidth = frame.width; frameHeight = frame.height
-            glActiveTexture(GL_TEXTURE0); glBindTexture(GL_TEXTURE_2D, textures[0])
-            GLUtils.texImage2D(GL_TEXTURE_2D, 0, frame, 0)
-            glActiveTexture(GL_TEXTURE1); glBindTexture(GL_TEXTURE_2D, textures[1])
-            GLUtils.texImage2D(GL_TEXTURE_2D, 0, mask, 0)
-            frame.recycle(); mask.recycle()
+            frame?.let {
+                frameWidth = it.width; frameHeight = it.height
+                glActiveTexture(GL_TEXTURE0); glBindTexture(GL_TEXTURE_2D, textures[0])
+                GLUtils.texImage2D(GL_TEXTURE_2D, 0, it, 0)
+                it.recycle()
+            }
+            mask?.let {
+                glActiveTexture(GL_TEXTURE1); glBindTexture(GL_TEXTURE_2D, textures[1])
+                GLUtils.texImage2D(GL_TEXTURE_2D, 0, it, 0)
+                maskAvailable = true
+                it.recycle()
+            }
         }
         glViewport(0, 0, screenWidth, screenHeight)
         glClearColor(0f,0f,0f,1f); glClear(GL_COLOR_BUFFER_BIT)
@@ -229,6 +254,7 @@ class PortraitRenderer(context: Context) : GLSurfaceView(context), GLSurfaceView
         glUniform1f(glGetUniformLocation(program,"debugMask"),if (maskOnly && shot == null) 1f else 0f)
         glUniform1f(glGetUniformLocation(program,"qualityBoost"), qualityEnhancement.coerceIn(0f, 1f))
         glUniform1f(glGetUniformLocation(program,"qualityEnabled"), if (qualityEnhancementEnabled) 1f else 0f)
+        glUniform1f(glGetUniformLocation(program,"maskAvailable"), if (maskAvailable) 1f else 0f)
         val position = glGetAttribLocation(program,"position")
         glEnableVertexAttribArray(position)
         glVertexAttribPointer(position,2,GL_FLOAT,false,0,vertices)
