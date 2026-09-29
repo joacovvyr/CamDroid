@@ -16,6 +16,8 @@ class PortraitRenderer(context: Context) : GLSurfaceView(context), GLSurfaceView
     @Volatile var intensity = 0.65f
     @Volatile var maskOnly = false
     @Volatile var lensProfile = VirtualLensProfile.NATURAL
+    @Volatile var qualityEnhancementEnabled = true
+    @Volatile var qualityEnhancement = 0.55f
     @Volatile private var focusX = 0.5f
     @Volatile private var focusY = 0.5f
     @Volatile private var focusEnabled = false
@@ -127,6 +129,24 @@ class PortraitRenderer(context: Context) : GLSurfaceView(context), GLSurfaceView
             uniform vec2 focusPoint;
             uniform float focusEnabled;
             uniform float debugMask;
+            uniform float qualityBoost;
+            uniform float qualityEnabled;
+            vec3 enhanceColor(vec2 sampleUv, vec3 center) {
+                vec2 stepUv = texel * 1.25;
+                vec3 north = texture2D(cameraFrame, clamp(sampleUv + vec2(0.0, stepUv.y), 0.0, 1.0)).rgb;
+                vec3 south = texture2D(cameraFrame, clamp(sampleUv - vec2(0.0, stepUv.y), 0.0, 1.0)).rgb;
+                vec3 east = texture2D(cameraFrame, clamp(sampleUv + vec2(stepUv.x, 0.0), 0.0, 1.0)).rgb;
+                vec3 west = texture2D(cameraFrame, clamp(sampleUv - vec2(stepUv.x, 0.0), 0.0, 1.0)).rgb;
+                vec3 soft = (center * 2.0 + north + south + east + west) / 6.0;
+                vec3 detail = center - soft;
+                vec3 crisp = mix(center, soft, 0.08 * qualityBoost);
+                crisp += detail * (0.85 + 1.35 * qualityBoost);
+                float luminance = dot(crisp, vec3(0.2126, 0.7152, 0.0722));
+                vec3 chroma = crisp - vec3(luminance);
+                crisp = vec3(luminance) + chroma * (1.0 + 0.10 * qualityBoost);
+                crisp = (crisp - 0.5) * (1.0 + 0.08 * qualityBoost) + 0.5;
+                return clamp(crisp, 0.0, 1.0);
+            }
             void main() {
                 vec2 lensUv = clamp((uv - 0.5) / cropScale + 0.5, 0.0, 1.0);
                 vec2 focusSourceUv = clamp((focusPoint - 0.5) * cropScale + 0.5, 0.0, 1.0);
@@ -151,6 +171,9 @@ class PortraitRenderer(context: Context) : GLSurfaceView(context), GLSurfaceView
                 vec4 backgroundColor = weights > 0.001 ? blurred / weights : original;
                 vec4 result = mix(backgroundColor, original, keep);
                 if (strength < 0.001) result = original;
+                if (qualityEnabled > 0.5 && qualityBoost > 0.001) {
+                    result.rgb = mix(result.rgb, enhanceColor(lensUv, result.rgb), qualityBoost);
+                }
                 float ring = focusEnabled > 0.5
                     ? 1.0 - smoothstep(0.0, 0.014, abs(distance(uv, focusPoint) - 0.16))
                     : 0.0;
@@ -204,6 +227,8 @@ class PortraitRenderer(context: Context) : GLSurfaceView(context), GLSurfaceView
         glUniform2f(glGetUniformLocation(program,"focusPoint"),focusX,focusY)
         glUniform1f(glGetUniformLocation(program,"focusEnabled"),if (focusEnabled) 1f else 0f)
         glUniform1f(glGetUniformLocation(program,"debugMask"),if (maskOnly && shot == null) 1f else 0f)
+        glUniform1f(glGetUniformLocation(program,"qualityBoost"), qualityEnhancement.coerceIn(0f, 1f))
+        glUniform1f(glGetUniformLocation(program,"qualityEnabled"), if (qualityEnhancementEnabled) 1f else 0f)
         val position = glGetAttribLocation(program,"position")
         glEnableVertexAttribArray(position)
         glVertexAttribPointer(position,2,GL_FLOAT,false,0,vertices)
