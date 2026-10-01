@@ -162,6 +162,24 @@ class PortraitRenderer(context: Context) : GLSurfaceView(context), GLSurfaceView
             uniform float qualityBoost;
             uniform float qualityEnabled;
             uniform float maskAvailable;
+            float refinedPerson(vec2 p) {
+                float centerMask = texture2D(personMask, p).r;
+                if (centerMask < 0.08 || centerMask > 0.92) return smoothstep(0.20, 0.80, centerMask);
+                vec3 centerColor = texture2D(cameraFrame, p).rgb;
+                float sum = centerMask;
+                float weightSum = 1.0;
+                for (int i = 0; i < 4; i++) {
+                    vec2 delta = i == 0 ? vec2(3.0, 0.0)
+                        : i == 1 ? vec2(-3.0, 0.0)
+                        : i == 2 ? vec2(0.0, 3.0) : vec2(0.0, -3.0);
+                    vec2 q = clamp(p + delta * texel, 0.0, 1.0);
+                    vec3 difference = texture2D(cameraFrame, q).rgb - centerColor;
+                    float weight = 1.0 / (1.0 + dot(difference, difference) * 36.0);
+                    sum += texture2D(personMask, q).r * weight;
+                    weightSum += weight;
+                }
+                return smoothstep(0.20, 0.80, sum / weightSum);
+            }
             vec3 enhanceColor(vec2 sampleUv, vec3 center) {
                 vec2 stepUv = texel * 1.25;
                 vec3 north = texture2D(cameraFrame, clamp(sampleUv + vec2(0.0, stepUv.y), 0.0, 1.0)).rgb;
@@ -182,19 +200,16 @@ class PortraitRenderer(context: Context) : GLSurfaceView(context), GLSurfaceView
                 vec2 lensUv = clamp((uv - 0.5) / cropScale + 0.5, 0.0, 1.0);
                 vec2 focusSourceUv = clamp((focusPoint - 0.5) * cropScale + 0.5, 0.0, 1.0);
                 vec4 original = texture2D(cameraFrame, lensUv);
-                float maskValue = maskAvailable > 0.5 ? texture2D(personMask, lensUv).r : 1.0;
-                float person = smoothstep(0.2, 0.85, maskValue);
-                float target = focusEnabled > 0.5 ? smoothstep(0.30, 0.06, distance(uv, focusPoint)) : 0.0;
-                float keep = max(person, target);
+                float person = maskAvailable > 0.5 ? refinedPerson(lensUv) : 1.0;
+                float keep = person;
                 vec4 blurred = vec4(0.0);
                 float weights = 0.0;
                 for (int x = -1; x <= 1; x++) {
                     for (int y = -1; y <= 1; y++) {
                         vec2 delta = vec2(float(x), float(y));
                         vec2 sampleUv = clamp(lensUv + delta * texel * strength * blurScale * 7.0, 0.0, 1.0);
-                        float samplePerson = smoothstep(0.2, 0.85, texture2D(personMask, sampleUv).r);
-                        float sampleTarget = focusEnabled > 0.5 ? smoothstep(0.30, 0.06, distance(sampleUv, focusSourceUv)) : 0.0;
-                        float background = 1.0 - max(samplePerson, sampleTarget);
+                        float samplePerson = smoothstep(0.20, 0.80, texture2D(personMask, sampleUv).r);
+                        float background = 1.0 - samplePerson;
                         float weight = exp(-dot(delta, delta) / 6.0) * background;
                         blurred += texture2D(cameraFrame, sampleUv) * weight;
                         weights += weight;
@@ -210,7 +225,7 @@ class PortraitRenderer(context: Context) : GLSurfaceView(context), GLSurfaceView
                     ? 1.0 - smoothstep(0.0, 0.014, abs(distance(uv, focusPoint) - 0.16))
                     : 0.0;
                 vec3 outputColor = mix(result.rgb, vec3(1.0, 0.78, 0.12), ring * 0.85);
-                gl_FragColor = debugMask > 0.5 ? vec4(vec3(keep), 1.0) : vec4(outputColor, 1.0);
+                gl_FragColor = debugMask > 0.5 ? vec4(vec3(person), 1.0) : vec4(outputColor, 1.0);
             }
         """)
         glAttachShader(program, vertex); glAttachShader(program, fragment); glLinkProgram(program)

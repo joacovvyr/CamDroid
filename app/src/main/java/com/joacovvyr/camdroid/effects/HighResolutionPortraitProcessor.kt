@@ -84,6 +84,7 @@ class HighResolutionPortraitProcessor : Closeable {
         val width = photo.width
         val height = photo.height
         if (strength <= 0f) return photo.copy(Bitmap.Config.ARGB_8888, false)
+        val refined = refineMaskWithImage(photo, mask, maskWidth, maskHeight)
         val lowWidth = max(1, width / 8)
         val lowHeight = max(1, height / 8)
         val small = Bitmap.createScaledBitmap(photo, lowWidth, lowHeight, true)
@@ -91,18 +92,18 @@ class HighResolutionPortraitProcessor : Closeable {
         small.getPixels(background, 0, lowWidth, 0, 0, lowWidth, lowHeight)
         small.recycle()
         val radius = (2 + strength.coerceIn(0f, 1f) * 5).toInt()
-        val blurred = blurBackground(background, lowWidth, lowHeight, radius, mask, maskWidth, maskHeight)
+        val blurred = blurBackground(background, lowWidth, lowHeight, radius,
+            refined.values, refined.width, refined.height)
         val output = Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888)
         val row = IntArray(width)
         val result = IntArray(width)
         for (y in 0 until height) {
             photo.getPixels(row, 0, width, 0, y, width, 1)
-            val maskY = (y + 0.5f) * maskHeight / height - 0.5f
+            val maskY = (y + 0.5f) * refined.height / height - 0.5f
             val blurY = (y + 0.5f) * lowHeight / height - 0.5f
             for (x in 0 until width) {
-                val maskX = (x + 0.5f) * maskWidth / width - 0.5f
-                val confidence = sampleMask(mask, maskWidth, maskHeight, maskX, maskY)
-                val person = smoothstep(0.12f, 0.82f, confidence)
+                val maskX = (x + 0.5f) * refined.width / width - 0.5f
+                val person = sampleMask(refined.values, refined.width, refined.height, maskX, maskY)
                 val blurX = (x + 0.5f) * lowWidth / width - 0.5f
                 val bg = sampleColor(blurred, lowWidth, lowHeight, blurX, blurY)
                 val fg = row[x]
@@ -115,6 +116,51 @@ class HighResolutionPortraitProcessor : Closeable {
             output.setPixels(result, 0, width, 0, y, width, 1)
         }
         return output
+    }
+
+    private data class RefinedMask(val values: FloatArray, val width: Int, val height: Int)
+
+    /** Guide uncertain ML pixels with the photo's own local color edges. */
+    private fun refineMaskWithImage(photo: Bitmap, raw: FloatArray,
+                                    rawWidth: Int, rawHeight: Int): RefinedMask {
+        val scale = min(1f, 1024f / max(photo.width, photo.height))
+        val width = max(1, (photo.width * scale).toInt())
+        val height = max(1, (photo.height * scale).toInt())
+        val guide = Bitmap.createScaledBitmap(photo, width, height, true)
+        val colors = IntArray(width * height)
+        guide.getPixels(colors, 0, width, 0, 0, width, height)
+        if (guide !== photo) guide.recycle()
+        val refined = FloatArray(colors.size)
+        val steps = intArrayOf(-3, 0, 3)
+        for (y in 0 until height) for (x in 0 until width) {
+            val center = colors[y * width + x]
+            val confidence = sampleMask(raw, rawWidth, rawHeight,
+                (x + 0.5f) * rawWidth / width - 0.5f,
+                (y + 0.5f) * rawHeight / height - 0.5f)
+            if (confidence < 0.08f || confidence > 0.92f) {
+                refined[y * width + x] = smoothstep(0.20f, 0.80f, confidence)
+                continue
+            }
+            var weighted = confidence
+            var weightSum = 1f
+            for (dy in steps) for (dx in steps) {
+                if (dx == 0 && dy == 0) continue
+                val nx = (x + dx).coerceIn(0, width - 1)
+                val ny = (y + dy).coerceIn(0, height - 1)
+                val neighbor = colors[ny * width + nx]
+                val dr = (android.graphics.Color.red(center) - android.graphics.Color.red(neighbor)) / 255f
+                val dg = (android.graphics.Color.green(center) - android.graphics.Color.green(neighbor)) / 255f
+                val db = (android.graphics.Color.blue(center) - android.graphics.Color.blue(neighbor)) / 255f
+                val weight = 1f / (1f + 36f * (dr*dr + dg*dg + db*db))
+                val neighborMask = sampleMask(raw, rawWidth, rawHeight,
+                    (nx + 0.5f) * rawWidth / width - 0.5f,
+                    (ny + 0.5f) * rawHeight / height - 0.5f)
+                weighted += neighborMask * weight
+                weightSum += weight
+            }
+            refined[y * width + x] = smoothstep(0.20f, 0.80f, weighted / weightSum)
+        }
+        return RefinedMask(refined, width, height)
     }
 
     private fun blend(a: Int, b: Int, weight: Float) = (a * (1f - weight) + b * weight).toInt().coerceIn(0, 255)

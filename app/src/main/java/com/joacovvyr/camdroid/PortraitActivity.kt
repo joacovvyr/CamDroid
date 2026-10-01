@@ -237,7 +237,7 @@ class PortraitActivity : AppCompatActivity() {
             renderer.requestRender()
         }
         val mask = Switch(this).apply {
-            text = "Ver máscara de persona"; setTextColor(-1)
+            text = "Ver máscara IA real"; setTextColor(-1)
             setOnCheckedChangeListener { _, checked -> renderer.maskOnly = checked; renderer.requestRender(); capture.isEnabled = frameReady && stillCapture != null && !checked && !saving }
         }
         capture = Button(this).apply {
