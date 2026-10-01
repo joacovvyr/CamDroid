@@ -29,10 +29,14 @@ import androidx.camera.core.Camera
 import androidx.camera.core.CameraSelector
 import androidx.camera.core.FocusMeteringAction
 import androidx.camera.core.ImageAnalysis
+import androidx.camera.core.ImageCapture
+import androidx.camera.core.ImageCaptureException
+import androidx.camera.core.ImageProxy
 import androidx.camera.core.SurfaceOrientedMeteringPointFactory
 import androidx.camera.lifecycle.ProcessCameraProvider
 import androidx.core.content.ContextCompat
 import com.joacovvyr.camdroid.effects.LocalPortraitEngine
+import com.joacovvyr.camdroid.effects.HighResolutionPortraitProcessor
 import com.joacovvyr.camdroid.effects.PortraitRenderer
 import com.joacovvyr.camdroid.effects.VirtualLensProfile
 import java.io.File
@@ -51,6 +55,8 @@ class PortraitActivity : AppCompatActivity() {
     private var engine: LocalPortraitEngine? = null
     private var engineSession = -1
     private var analyzer: ImageAnalysis? = null
+    private var stillCapture: ImageCapture? = null
+    private val photoProcessor = HighResolutionPortraitProcessor()
     private var provider: ProcessCameraProvider? = null
     private var camera: Camera? = null
     private val busy = AtomicBoolean(false)
@@ -66,7 +72,7 @@ class PortraitActivity : AppCompatActivity() {
     private var exposureRange: Range<Long> = Range(250_000L, 1_000_000_000L)
     private var focusDistanceMax = 10f
     private var zoomMax = 10f
-    private var analysisSize = Size(640, 480)
+    private var analysisSize = Size(1280, 720)
     private val proState = CameraProState()
     private var proControls: LinearLayout? = null
     private lateinit var proToggle: Button
@@ -225,18 +231,18 @@ class PortraitActivity : AppCompatActivity() {
         }
         qualityPanel.addView(qualityToggle, LinearLayout.LayoutParams(-1, dp(42)))
         val qualityValue = caption("25%")
-        sliderRow(qualityPanel, "Detalle, color y nitidez en tiempo real", qualityValue, 100, 25) { value ->
+        sliderRow(qualityPanel, "Ajuste de vista · no modifica foto", qualityValue, 100, 25) { value ->
             renderer.qualityEnhancement = value / 100f
             qualityValue.text = "${value}%"
             renderer.requestRender()
         }
         val mask = Switch(this).apply {
             text = "Ver máscara de persona"; setTextColor(-1)
-            setOnCheckedChangeListener { _, checked -> renderer.maskOnly = checked; renderer.requestRender(); capture.isEnabled = frameReady && !checked && !saving }
+            setOnCheckedChangeListener { _, checked -> renderer.maskOnly = checked; renderer.requestRender(); capture.isEnabled = frameReady && stillCapture != null && !checked && !saving }
         }
         capture = Button(this).apply {
             text = "GUARDAR FOTO IA"; isEnabled = false
-            setOnClickListener { if (!frameReady || renderer.maskOnly) return@setOnClickListener; saving = true; isEnabled = false; renderer.capture { bitmap -> save(bitmap) } }
+            setOnClickListener { if (!frameReady || renderer.maskOnly || stillCapture == null) return@setOnClickListener; saving = true; isEnabled = false; takeHighResolutionPhoto() }
         }
         val flip = Button(this).apply {
             text = "CAMBIAR CÁMARA"
@@ -292,6 +298,7 @@ class PortraitActivity : AppCompatActivity() {
         val resolutions = listOf(Size(640, 480), Size(1280, 720), Size(1920, 1080))
         val resolutionSpinner = Spinner(this).apply {
             adapter = ArrayAdapter(this@PortraitActivity, android.R.layout.simple_spinner_dropdown_item, resolutions.map { "${it.width}×${it.height}" })
+            setSelection(1)
             onItemSelectedListener = object : AdapterView.OnItemSelectedListener {
                 override fun onNothingSelected(parent: AdapterView<*>?) = Unit
                 override fun onItemSelected(parent: AdapterView<*>?, view: View?, position: Int, id: Long) { if (analysisSize != resolutions[position]) { analysisSize = resolutions[position]; if (active) bindCamera() } }
@@ -314,7 +321,7 @@ class PortraitActivity : AppCompatActivity() {
     }
     private fun bindCamera() {
         if (!active) return
-        val session = ++generation; frameReady = false; capture.isEnabled = false; status.text = "Iniciando segmentación local…"; analyzer?.clearAnalyzer()
+        val session = ++generation; frameReady = false; capture.isEnabled = false; stillCapture = null; status.text = "Iniciando segmentación local…"; analyzer?.clearAnalyzer()
         val future = ProcessCameraProvider.getInstance(this)
         future.addListener({
             if (!active || session != generation) return@addListener
@@ -340,7 +347,7 @@ class PortraitActivity : AppCompatActivity() {
                                     val fps = if (lastFrame == 0L) 0 else (1000L / (now - lastFrame).coerceAtLeast(1)).toInt()
                                     lastFrame = now
                                     frameReady = true
-                                    capture.isEnabled = !renderer.maskOnly && !saving
+                                    capture.isEnabled = stillCapture != null && !renderer.maskOnly && !saving
                                     status.text = "Vista fluida · ${fps} FPS · ${upright.width}×${upright.height}"
                                 }
                             }
@@ -353,14 +360,48 @@ class PortraitActivity : AppCompatActivity() {
                             if (!active || session != generation || error != null || mask == null) {
                                 upright.recycle(); mask?.recycle(); if (active && session == generation && error != null) status.text = "Falló la IA local: ${error.localizedMessage}"
                             } else {
-                                val dimensions = "${upright.width}×${upright.height}"; renderer.submit(upright,mask); val now = SystemClock.elapsedRealtime(); val fps = if (lastFrame == 0L) 0 else (1000L/(now-lastFrame).coerceAtLeast(1)).toInt(); lastFrame = now; frameReady = true; capture.isEnabled = !renderer.maskOnly && !saving; val focusLabel = if (focusTargetActive) " · objetivo fijado" else ""; status.text = "IA local · ${now-started} ms · ${fps} FPS · ${dimensions}${focusLabel}"
+                                val dimensions = "${upright.width}×${upright.height}"; renderer.submit(upright,mask); val now = SystemClock.elapsedRealtime(); val fps = if (lastFrame == 0L) 0 else (1000L/(now-lastFrame).coerceAtLeast(1)).toInt(); lastFrame = now; frameReady = true; capture.isEnabled = stillCapture != null && !renderer.maskOnly && !saving; val focusLabel = if (focusTargetActive) " · objetivo fijado" else ""; status.text = "IA local · ${now-started} ms · ${fps} FPS · ${dimensions}${focusLabel}"
                             }
                         }
                     } catch (error: Exception) { proxy.close(); if (shouldInfer) busy.set(false); runOnUiThread { if (active) status.text = "Error de procesamiento: ${error.localizedMessage}" } }
                 }
-                camera = cameraProvider.bindToLifecycle(this,selector,analysis); refreshCameraCapabilities(checkNotNull(camera)); applyProCameraState()
+                val still = ImageCapture.Builder()
+                    .setCaptureMode(ImageCapture.CAPTURE_MODE_MAXIMIZE_QUALITY)
+                    .setJpegQuality(98)
+                    .build()
+                camera = cameraProvider.bindToLifecycle(this,selector,analysis,still)
+                stillCapture = still
+                refreshCameraCapabilities(checkNotNull(camera)); applyProCameraState()
             } catch (error: Exception) { status.text = "No se pudo abrir la cámara: ${error.localizedMessage}" }
         }, ContextCompat.getMainExecutor(this))
+    }
+    private fun takeHighResolutionPhoto() {
+        val still = stillCapture ?: return
+        val mirror = front
+        val blur = renderer.intensity
+        status.text = "Capturando foto de alta resolución…"
+        still.takePicture(storage, object : ImageCapture.OnImageCapturedCallback() {
+            override fun onCaptureSuccess(image: ImageProxy) {
+                try {
+                    val plane = image.planes.firstOrNull() ?: error("Foto vacía")
+                    val bytes = ByteArray(plane.buffer.remaining())
+                    plane.buffer.get(bytes)
+                    val rotation = image.imageInfo.rotationDegrees
+                    image.close()
+                    photoProcessor.process(bytes, rotation, mirror, blur, storage) { photo, error ->
+                        if (photo == null || error != null) {
+                            notifySaved("No se pudo procesar la foto: ${error?.localizedMessage}")
+                        } else save(photo)
+                    }
+                } catch (error: Exception) {
+                    image.close()
+                    notifySaved("No se pudo leer la foto: ${error.localizedMessage}")
+                }
+            }
+            override fun onError(exception: ImageCaptureException) {
+                notifySaved("No se pudo capturar la foto: ${exception.localizedMessage}")
+            }
+        })
     }
     private fun save(bitmap: Bitmap) {
         if (storage.isShutdown) { bitmap.recycle(); return }
@@ -376,7 +417,7 @@ class PortraitActivity : AppCompatActivity() {
             } catch (error: Exception) { notifySaved("No se pudo guardar: ${error.localizedMessage}") } finally { bitmap.recycle() }
         }
     }
-    private fun notifySaved(message: String) = runOnUiThread { saving = false; if (active) { Toast.makeText(this,message,Toast.LENGTH_LONG).show(); capture.isEnabled = frameReady && !renderer.maskOnly } }
-    override fun onPause() { active = false; generation++; saving = false; analyzer?.clearAnalyzer(); provider?.unbindAll(); camera = null; renderer.cancelCapture(); renderer.onPause(); renderer.discardPending(); super.onPause() }
-    override fun onDestroy() { worker.execute { engine?.close() }; worker.shutdown(); storage.shutdown(); super.onDestroy() }
+    private fun notifySaved(message: String) = runOnUiThread { saving = false; if (active) { Toast.makeText(this,message,Toast.LENGTH_LONG).show(); capture.isEnabled = frameReady && stillCapture != null && !renderer.maskOnly } }
+    override fun onPause() { active = false; generation++; saving = false; stillCapture = null; analyzer?.clearAnalyzer(); provider?.unbindAll(); camera = null; renderer.cancelCapture(); renderer.onPause(); renderer.discardPending(); super.onPause() }
+    override fun onDestroy() { worker.execute { engine?.close() }; storage.execute { photoProcessor.close() }; worker.shutdown(); storage.shutdown(); super.onDestroy() }
 }
