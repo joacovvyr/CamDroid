@@ -18,6 +18,8 @@ jobs:
       - uses: gradle/actions/setup-gradle@v4
         with:
           gradle-version: '8.9'
+      - name: Verify bundled local model
+        run: echo '1a380d3744103e11ef343534aaff54815cae40769dcd00c023652a7e5bc47f4b  app/src/main/assets/ESRGAN.tflite' | sha256sum --check
       - run: gradle assembleDebug lintDebug --stacktrace
       - name: Verify offline APK permissions
         shell: bash

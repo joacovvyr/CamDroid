@@ -37,6 +37,7 @@ import androidx.camera.lifecycle.ProcessCameraProvider
 import androidx.core.content.ContextCompat
 import com.joacovvyr.camdroid.effects.LocalPortraitEngine
 import com.joacovvyr.camdroid.effects.HighResolutionPortraitProcessor
+import com.joacovvyr.camdroid.effects.NeuralPhotoEnhancer
 import com.joacovvyr.camdroid.effects.PortraitRenderer
 import com.joacovvyr.camdroid.effects.VirtualLensProfile
 import java.io.File
@@ -50,6 +51,7 @@ class PortraitActivity : AppCompatActivity() {
     private lateinit var renderer: PortraitRenderer
     private lateinit var status: TextView
     private lateinit var capture: Button
+    private lateinit var enhanceCapture: Button
     private val worker = Executors.newSingleThreadExecutor()
     private val storage = Executors.newSingleThreadExecutor()
     private var engine: LocalPortraitEngine? = null
@@ -238,11 +240,22 @@ class PortraitActivity : AppCompatActivity() {
         }
         val mask = Switch(this).apply {
             text = "Ver máscara IA real"; setTextColor(-1)
-            setOnCheckedChangeListener { _, checked -> renderer.maskOnly = checked; renderer.requestRender(); capture.isEnabled = frameReady && stillCapture != null && !checked && !saving }
+            setOnCheckedChangeListener { _, checked -> renderer.maskOnly = checked; renderer.requestRender(); capture.isEnabled = frameReady && stillCapture != null && !checked && !saving; enhanceCapture.isEnabled = frameReady && stillCapture != null && !saving }
         }
         capture = Button(this).apply {
             text = "GUARDAR FOTO IA"; isEnabled = false
             setOnClickListener { if (!frameReady || renderer.maskOnly || stillCapture == null) return@setOnClickListener; saving = true; isEnabled = false; takeHighResolutionPhoto() }
+        }
+        enhanceCapture = Button(this).apply {
+            text = "FOTO ORIGINAL + IA HASTA 8K"
+            isEnabled = false
+            setOnClickListener {
+                if (!frameReady || stillCapture == null || saving) return@setOnClickListener
+                saving = true
+                capture.isEnabled = false
+                isEnabled = false
+                takeEnhancedPhoto()
+            }
         }
         val flip = Button(this).apply {
             text = "CAMBIAR CÁMARA"
@@ -308,6 +321,7 @@ class PortraitActivity : AppCompatActivity() {
         controls.addView(title); controls.addView(status); controls.addView(lensLabel); controls.addView(lensSelector); controls.addView(label); controls.addView(strength)
         controls.addView(qualityPanel, LinearLayout.LayoutParams(-1, -2).apply { topMargin = dp(8) })
         controls.addView(mask); controls.addView(row)
+        controls.addView(enhanceCapture, LinearLayout.LayoutParams(-1, dp(46)).apply { topMargin = dp(6) })
         controls.addView(proToggle, LinearLayout.LayoutParams(-1, dp(46)).apply { topMargin = dp(8) }); controls.addView(proPanel, LinearLayout.LayoutParams(-1, -2).apply { topMargin = dp(8) })
         controls.addView(TextView(this).apply { text = "Toque: objetivo IA · deslizar: controles pro · S22 optimizado"; setTextColor(0xffb7c1cc.toInt()); textSize = 12f })
         setContentView(LinearLayout(this).apply {
@@ -321,7 +335,7 @@ class PortraitActivity : AppCompatActivity() {
     }
     private fun bindCamera() {
         if (!active) return
-        val session = ++generation; frameReady = false; capture.isEnabled = false; stillCapture = null; status.text = "Iniciando segmentación local…"; analyzer?.clearAnalyzer()
+        val session = ++generation; frameReady = false; capture.isEnabled = false; enhanceCapture.isEnabled = false; stillCapture = null; status.text = "Iniciando segmentación local…"; analyzer?.clearAnalyzer()
         val future = ProcessCameraProvider.getInstance(this)
         future.addListener({
             if (!active || session != generation) return@addListener
@@ -347,7 +361,7 @@ class PortraitActivity : AppCompatActivity() {
                             if (!active || session != generation || error != null || mask == null) {
                                 upright.recycle(); mask?.recycle(); if (active && session == generation && error != null) status.text = "Falló la IA local: ${error.localizedMessage}"
                             } else {
-                                val dimensions = "${upright.width}×${upright.height}"; renderer.submit(upright,mask); val now = SystemClock.elapsedRealtime(); val fps = if (lastFrame == 0L) 0 else (1000L/(now-lastFrame).coerceAtLeast(1)).toInt(); lastFrame = now; frameReady = true; capture.isEnabled = stillCapture != null && !renderer.maskOnly && !saving; val focusLabel = if (focusTargetActive) " · objetivo fijado" else ""; status.text = "IA local · ${now-started} ms · ${fps} FPS · ${dimensions}${focusLabel}"
+                                val dimensions = "${upright.width}×${upright.height}"; renderer.submit(upright,mask); val now = SystemClock.elapsedRealtime(); val fps = if (lastFrame == 0L) 0 else (1000L/(now-lastFrame).coerceAtLeast(1)).toInt(); lastFrame = now; frameReady = true; capture.isEnabled = stillCapture != null && !renderer.maskOnly && !saving; enhanceCapture.isEnabled = stillCapture != null && !saving; val focusLabel = if (focusTargetActive) " · objetivo fijado" else ""; if (!saving) status.text = "IA local · ${now-started} ms · ${fps} FPS · ${dimensions}${focusLabel}"
                             }
                         }
                     } catch (error: Exception) { proxy.close(); if (shouldInfer) busy.set(false); runOnUiThread { if (active) status.text = "Error de procesamiento: ${error.localizedMessage}" } }
@@ -390,6 +404,88 @@ class PortraitActivity : AppCompatActivity() {
             }
         })
     }
+    private fun takeEnhancedPhoto() {
+        val still = stillCapture ?: return
+        val mirror = front
+        val baseName = "CamDroid_${System.currentTimeMillis()}"
+        status.text = "Capturando original…"
+        still.takePicture(storage, object : ImageCapture.OnImageCapturedCallback() {
+            override fun onCaptureSuccess(image: ImageProxy) {
+                val jpeg: ByteArray
+                val rotation: Int
+                try {
+                    val plane = image.planes.firstOrNull() ?: error("Foto vacía")
+                    jpeg = ByteArray(plane.buffer.remaining())
+                    plane.buffer.get(jpeg)
+                    rotation = image.imageInfo.rotationDegrees
+                } catch (error: Exception) {
+                    notifySaved("No se pudo leer el original: ${error.localizedMessage}")
+                    return
+                } finally {
+                    image.close()
+                }
+                var originalSaved = false
+                try {
+                    saveOriginalJpeg("${baseName}_ORIGINAL.jpg", jpeg)
+                    originalSaved = true
+                    runOnUiThread { if (active) status.text = "Original guardado · iniciando IA local…" }
+                    val processed = NeuralPhotoEnhancer(this@PortraitActivity).enhance(
+                        jpeg, rotation, mirror
+                    ) { done, total ->
+                        runOnUiThread { if (active) status.text = "IA local · ${done * 100 / total}% (${done}/${total} bloques)" }
+                    }
+                    try {
+                        saveEnhancedJpeg("${baseName}_IA.jpg", processed)
+                        notifySaved("Dos fotos guardadas: ORIGINAL + IA (${processed.width}×${processed.height})")
+                    } finally {
+                        processed.recycle()
+                    }
+                } catch (error: OutOfMemoryError) {
+                    notifySaved(if (originalSaved) "Se guardó el original. Falta memoria para la foto IA 8K."
+                        else "Falta memoria para guardar la foto.")
+                } catch (error: Exception) {
+                    notifySaved(if (originalSaved) "Se guardó el original. Falló el procesamiento IA: ${error.localizedMessage}"
+                        else "No se pudo guardar el original: ${error.localizedMessage}")
+                }
+            }
+            override fun onError(exception: ImageCaptureException) {
+                notifySaved("No se pudo capturar la foto: ${exception.localizedMessage}")
+            }
+        })
+    }
+    private fun saveOriginalJpeg(name: String, jpeg: ByteArray) {
+        saveNamedJpeg(name) { stream -> stream.write(jpeg) }
+    }
+    private fun saveEnhancedJpeg(name: String, bitmap: Bitmap) {
+        saveNamedJpeg(name) { stream -> check(bitmap.compress(Bitmap.CompressFormat.JPEG, 95, stream)) }
+    }
+    private fun saveNamedJpeg(name: String, writer: (java.io.OutputStream) -> Unit) {
+        if (Build.VERSION.SDK_INT >= 29) {
+            val values = ContentValues().apply {
+                put(MediaStore.Images.Media.DISPLAY_NAME, name)
+                put(MediaStore.Images.Media.MIME_TYPE, "image/jpeg")
+                put(MediaStore.Images.Media.RELATIVE_PATH, "Pictures/CamDroid")
+                put(MediaStore.Images.Media.IS_PENDING, 1)
+            }
+            val uri = contentResolver.insert(MediaStore.Images.Media.EXTERNAL_CONTENT_URI, values)
+                ?: error("No se pudo crear ${name}")
+            try {
+                contentResolver.openOutputStream(uri)?.use(writer) ?: error("No se pudo abrir ${name}")
+                contentResolver.update(uri, ContentValues().apply {
+                    put(MediaStore.Images.Media.IS_PENDING, 0)
+                }, null, null)
+            } catch (error: Exception) {
+                contentResolver.delete(uri, null, null)
+                throw error
+            } catch (error: OutOfMemoryError) {
+                contentResolver.delete(uri, null, null)
+                throw error
+            }
+        } else {
+            val directory = getExternalFilesDir("pictures") ?: filesDir
+            File(directory, name).outputStream().use(writer)
+        }
+    }
     private fun save(bitmap: Bitmap) {
         if (storage.isShutdown) { bitmap.recycle(); return }
         storage.execute {
@@ -404,7 +500,7 @@ class PortraitActivity : AppCompatActivity() {
             } catch (error: Exception) { notifySaved("No se pudo guardar: ${error.localizedMessage}") } finally { bitmap.recycle() }
         }
     }
-    private fun notifySaved(message: String) = runOnUiThread { saving = false; if (active) { Toast.makeText(this,message,Toast.LENGTH_LONG).show(); capture.isEnabled = frameReady && stillCapture != null && !renderer.maskOnly } }
+    private fun notifySaved(message: String) = runOnUiThread { saving = false; if (active) { Toast.makeText(this,message,Toast.LENGTH_LONG).show(); status.text = message; capture.isEnabled = frameReady && stillCapture != null && !renderer.maskOnly; enhanceCapture.isEnabled = frameReady && stillCapture != null } }
     override fun onPause() { active = false; generation++; saving = false; stillCapture = null; analyzer?.clearAnalyzer(); provider?.unbindAll(); camera = null; renderer.cancelCapture(); renderer.onPause(); renderer.discardPending(); super.onPause() }
     override fun onDestroy() { worker.execute { engine?.close() }; storage.execute { photoProcessor.close() }; worker.shutdown(); storage.shutdown(); super.onDestroy() }
 }
