@@ -17,6 +17,8 @@ import java.nio.ByteOrder
 import kotlin.math.max
 import kotlin.math.min
 import kotlin.math.sqrt
+import kotlin.math.ceil
+import kotlin.math.floor
 import java.util.concurrent.TimeUnit
 
 /**
@@ -25,7 +27,18 @@ import java.util.concurrent.TimeUnit
  */
 class NeuralPhotoEnhancer(private val context: Context) {
     private val maxPixels = 7680L * 4320L
+    // The original JPEG is preserved byte-for-byte. Keep the working bitmap smaller so the
+    // 8K output, the model and CameraX can coexist inside the S22 app heap.
+    private val maxWorkingPixels = 8_000_000L
     private val halo = 8
+
+    private data class PixelRegion(
+        val pixels: IntArray,
+        val width: Int,
+        val height: Int,
+        val left: Int,
+        val top: Int
+    )
 
     fun enhance(jpeg: ByteArray, rotation: Int, mirror: Boolean,
                 progress: (Int, Int) -> Unit): Bitmap {
@@ -49,7 +62,7 @@ class NeuralPhotoEnhancer(private val context: Context) {
                 detectFaceRegions(source)
             } catch (_: Exception) {
                 // If face protection is unavailable, do not run a generative model at all.
-                return faithfulUpscale(source)
+                return faithfulUpscale(source, progress)
             }
             val upScale = min(4.0,
                 min(7680.0 / max(source.width, source.height),
@@ -60,15 +73,6 @@ class NeuralPhotoEnhancer(private val context: Context) {
             val inputWidth = outputWidth / 4
             val inputHeight = outputHeight / 4
             modelInput = Bitmap.createScaledBitmap(source, inputWidth, inputHeight, true)
-            val modelPixels = IntArray(inputWidth * inputHeight)
-            modelInput.getPixels(modelPixels, 0, inputWidth, 0, 0, inputWidth, inputHeight)
-            if (modelInput !== source) modelInput.recycle()
-            modelInput = null
-            for (i in modelPixels.indices) modelPixels[i] = tone(modelPixels[i])
-
-            val originalPixels = IntArray(source.width * source.height)
-            source.getPixels(originalPixels, 0, source.width, 0, 0, source.width, source.height)
-            output = Bitmap.createBitmap(outputWidth, outputHeight, Bitmap.Config.ARGB_8888)
 
             val model = context.assets.open("ESRGAN.tflite").use { it.readBytes() }
             val options = Interpreter.Options().setNumThreads(4)
@@ -86,6 +90,7 @@ class NeuralPhotoEnhancer(private val context: Context) {
                 }, options)
                 val shape = interpreter.getInputTensor(0).shape()
                 tile = shape[1]
+                interpreter.allocateTensors()
             }
             require(tile >= 24) { "El modelo no permite procesar mosaicos" }
             val factor = 4
@@ -95,6 +100,7 @@ class NeuralPhotoEnhancer(private val context: Context) {
                 shape[1] == tile * factor && shape[2] == tile * factor && shape[3] == 3) {
                 "Modelo ESRGAN incompatible con la salida esperada"
             }
+            output = Bitmap.createBitmap(outputWidth, outputHeight, Bitmap.Config.ARGB_8888)
             val stride = tile - 2 * halo
             val cols = (inputWidth + stride - 1) / stride
             val rows = (inputHeight + stride - 1) / stride
@@ -102,15 +108,26 @@ class NeuralPhotoEnhancer(private val context: Context) {
             val input = ByteBuffer.allocateDirect(tile * tile * 3 * 4).order(ByteOrder.nativeOrder())
             val prediction = ByteBuffer.allocateDirect(shape[1] * shape[2] * 3 * 4)
                 .order(ByteOrder.nativeOrder())
+            val inputBitmap = requireNotNull(modelInput)
+            val modelRow = IntArray(tile)
+            val result = IntArray(stride * factor * stride * factor)
             var done = 0
             for (ty in 0 until rows) for (tx in 0 until cols) {
                 val baseX = tx * stride
                 val baseY = ty * stride
                 input.clear()
+                val readLeft = (baseX - halo).coerceIn(0, inputWidth - 1)
+                val readRight = (baseX - halo + tile - 1).coerceIn(0, inputWidth - 1)
+                val readWidth = readRight - readLeft + 1
                 for (y in 0 until tile) for (x in 0 until tile) {
-                    val sx = (baseX + x - halo).coerceIn(0, inputWidth - 1)
-                    val sy = (baseY + y - halo).coerceIn(0, inputHeight - 1)
-                    val pixel = modelPixels[sy * inputWidth + sx]
+                    // Read one model row at a time instead of keeping a second full-resolution
+                    // IntArray alive for the whole 8K operation.
+                    if (x == 0) {
+                        val sy = (baseY + y - halo).coerceIn(0, inputHeight - 1)
+                        inputBitmap.getPixels(modelRow, 0, readWidth, readLeft, sy, readWidth, 1)
+                    }
+                    val sx = (baseX + x - halo).coerceIn(readLeft, readRight)
+                    val pixel = tone(modelRow[sx - readLeft])
                     input.putFloat(Color.red(pixel).toFloat())
                     input.putFloat(Color.green(pixel).toFloat())
                     input.putFloat(Color.blue(pixel).toFloat())
@@ -120,7 +137,10 @@ class NeuralPhotoEnhancer(private val context: Context) {
                 interpreter.run(input, prediction)
                 val validWidth = min(stride, inputWidth - baseX) * factor
                 val validHeight = min(stride, inputHeight - baseY) * factor
-                val result = IntArray(validWidth * validHeight)
+                val sourceRegion = loadSourceRegion(
+                    source, baseX * factor, baseY * factor, validWidth, validHeight,
+                    outputWidth, outputHeight
+                )
                 for (y in 0 until validHeight) for (x in 0 until validWidth) {
                     val xInModel = halo * factor + x
                     val yInModel = halo * factor + y
@@ -132,10 +152,14 @@ class NeuralPhotoEnhancer(private val context: Context) {
                     val worldY = baseY * factor + y
                     val sourceX = (worldX + 0.5f) * source.width / outputWidth - 0.5f
                     val sourceY = (worldY + 0.5f) * source.height / outputHeight - 0.5f
-                    val original = bilinear(originalPixels, source.width, source.height, sourceX, sourceY)
+                    val localX = sourceX - sourceRegion.left
+                    val localY = sourceY - sourceRegion.top
+                    val original = bilinear(sourceRegion.pixels, sourceRegion.width,
+                        sourceRegion.height, localX, localY)
                     val protected = faceProtection(faceRegions, sourceX, sourceY)
                     val enhanced = tone(original)
-                    val detail = detailConfidence(originalPixels, source.width, source.height, sourceX, sourceY)
+                    val detail = detailConfidence(sourceRegion.pixels, sourceRegion.width,
+                        sourceRegion.height, localX, localY)
                     val amount = 0.32f * detail * (1f - protected)
                     result[y * validWidth + x] = Color.rgb(
                         guardedChannel(Color.red(original), Color.red(enhanced), neuralR, amount, protected),
@@ -150,6 +174,26 @@ class NeuralPhotoEnhancer(private val context: Context) {
             val finished = requireNotNull(output)
             output = null
             return finished
+        } catch (error: RuntimeException) {
+            // A device-specific TFLite delegate or tensor allocation can reject a large photo.
+            // Keep the capture usable: release the large intermediates and return a faithful
+            // interpolated 8K result while the exact original is already safely stored.
+            interpreter?.close()
+            interpreter = null
+            modelInput?.let { if (!it.isRecycled && it !== source) it.recycle() }
+            modelInput = null
+            output?.recycle()
+            output = null
+            return faithfulUpscale(source, progress)
+        } catch (error: OutOfMemoryError) {
+            interpreter?.close()
+            interpreter = null
+            modelInput?.let { if (!it.isRecycled && it !== source) it.recycle() }
+            modelInput = null
+            output?.recycle()
+            output = null
+            System.gc()
+            return faithfulUpscale(source, progress)
         } finally {
             interpreter?.close()
             modelInput?.let { if (it !== source) it.recycle() }
@@ -212,11 +256,18 @@ class NeuralPhotoEnhancer(private val context: Context) {
         return mix(anchored.toInt(), original, protection)
     }
 
-    private fun faithfulUpscale(source: Bitmap): Bitmap {
+    private fun faithfulUpscale(source: Bitmap, progress: (Int, Int) -> Unit): Bitmap {
+        progress(0, 1)
         val scale = min(4.0, min(7680.0 / max(source.width, source.height),
             sqrt(maxPixels.toDouble() / (source.width.toLong() * source.height))))
-        return Bitmap.createScaledBitmap(source, max(1, (source.width * scale).toInt()),
-            max(1, (source.height * scale).toInt()), true)
+        val width = max(1, (source.width * scale).toInt())
+        val height = max(1, (source.height * scale).toInt())
+        return if (width == source.width && height == source.height) {
+            source.copy(Bitmap.Config.ARGB_8888, false)
+        } else {
+            Bitmap.createScaledBitmap(source, width, height, true)
+        }
+            .also { progress(1, 1) }
     }
 
     private fun decodeBounded(jpeg: ByteArray): Bitmap {
@@ -224,7 +275,7 @@ class NeuralPhotoEnhancer(private val context: Context) {
         BitmapFactory.decodeByteArray(jpeg, 0, jpeg.size, bounds)
         require(bounds.outWidth > 0 && bounds.outHeight > 0) { "JPEG original inválido" }
         var sample = 1
-        while (bounds.outWidth.toLong() * bounds.outHeight / (sample * sample) > 16_000_000)
+        while (bounds.outWidth.toLong() * bounds.outHeight / (sample * sample) > maxWorkingPixels)
             sample *= 2
         return BitmapFactory.decodeByteArray(jpeg, 0, jpeg.size, BitmapFactory.Options().apply {
             inSampleSize = sample
@@ -262,6 +313,24 @@ class NeuralPhotoEnhancer(private val context: Context) {
             return (top * (1f - fy) + bottom * fy).toInt().coerceIn(0, 255)
         }
         return Color.rgb(channel(Color::red), channel(Color::green), channel(Color::blue))
+    }
+
+    private fun loadSourceRegion(source: Bitmap, outputX: Int, outputY: Int,
+                                 outputWidth: Int, outputHeight: Int,
+                                 finalWidth: Int, finalHeight: Int): PixelRegion {
+        val left = floor((outputX - 2).toDouble() * source.width / finalWidth)
+            .toInt().coerceIn(0, source.width - 1)
+        val top = floor((outputY - 2).toDouble() * source.height / finalHeight)
+            .toInt().coerceIn(0, source.height - 1)
+        val right = ceil((outputX + outputWidth + 2).toDouble() * source.width / finalWidth)
+            .toInt().plus(1).coerceIn(left + 1, source.width)
+        val bottom = ceil((outputY + outputHeight + 2).toDouble() * source.height / finalHeight)
+            .toInt().plus(1).coerceIn(top + 1, source.height)
+        val width = right - left
+        val height = bottom - top
+        val pixels = IntArray(width * height)
+        source.getPixels(pixels, 0, width, left, top, width, height)
+        return PixelRegion(pixels, width, height, left, top)
     }
     private fun mix(a: Int, b: Int, fraction: Float) =
         (a * (1f - fraction) + b * fraction).toInt().coerceIn(0, 255)
