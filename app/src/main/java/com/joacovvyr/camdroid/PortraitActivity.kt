@@ -335,24 +335,11 @@ class PortraitActivity : AppCompatActivity() {
                 analysis.setAnalyzer(worker) { proxy ->
                     val shouldInfer = busy.compareAndSet(false,true)
                     if (!active || session != generation) { if (shouldInfer) busy.set(false); proxy.close(); return@setAnalyzer }
+                    if (!shouldInfer) { proxy.close(); return@setAnalyzer }
                     val started = SystemClock.elapsedRealtime()
                     try {
                         val source = proxy.toBitmap(); val transform = Matrix().apply { postRotate(proxy.imageInfo.rotationDegrees.toFloat()); if (mirror) postScale(-1f,1f) }
                         val upright = Bitmap.createBitmap(source,0,0,source.width,source.height,transform,true); if (upright !== source) source.recycle(); proxy.close()
-                        if (!shouldInfer) {
-                            renderer.submitFrame(upright)
-                            val now = SystemClock.elapsedRealtime()
-                            runOnUiThread {
-                                if (active && session == generation) {
-                                    val fps = if (lastFrame == 0L) 0 else (1000L / (now - lastFrame).coerceAtLeast(1)).toInt()
-                                    lastFrame = now
-                                    frameReady = true
-                                    capture.isEnabled = stillCapture != null && !renderer.maskOnly && !saving
-                                    status.text = "Vista fluida · ${fps} FPS · ${upright.width}×${upright.height}"
-                                }
-                            }
-                            return@setAnalyzer
-                        }
                         if (engineSession != session) { engine?.close(); engine = LocalPortraitEngine(); engineSession = session }
                         val localEngine = checkNotNull(engine)
                         localEngine.process(upright, ContextCompat.getMainExecutor(this)) { mask, error ->

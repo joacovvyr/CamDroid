@@ -8,7 +8,7 @@ Desde la versión 0.5, **GUARDAR FOTO IA** usa CameraX ImageCapture para solicit
 
 La vista en tiempo real es otro camino: CameraX ImageAnalysis, máscara local en modo STREAM_MODE y desenfoque OpenGL. Inicia a 1280×720; la inferencia se reduce internamente a 640 píxeles en el lado mayor. La foto procesa su propia máscara con SINGLE_IMAGE_MODE. La foto aplica la intensidad de desenfoque elegida; el ajuste «Mejora IA» modifica solo la vista. La cámara delantera se refleja en el archivo para coincidir con la composición mostrada.
 
-En la versión 0.6, **Ver máscara IA real** muestra solo la persona detectada. El punto de enfoque ya no se añade a esa máscara ni protege un círculo de fondo al desenfocar. Los bordes de confianza intermedia usan el color de la imagen como guía, tanto en la vista como al guardar la foto. Esto mejora transiciones sobre fondos contrastados; no puede reconstruir un dedo o un mechón que el modelo no detectó.
+En la versión 0.6, **Ver máscara IA real** muestra solo la persona detectada. El punto de enfoque ya no se añade a esa máscara ni protege un círculo de fondo al desenfocar. Los bordes de confianza intermedia usan el color de la imagen como guía, tanto en la vista como al guardar la foto. La vista mantiene siempre juntos el frame y su máscara para evitar bordes dobles al mover la mano; puede actualizarse menos veces por segundo. Esto mejora transiciones sobre fondos contrastados, pero no puede reconstruir un dedo o un mechón que el modelo no detectó.
 
 En Android 10 o posterior, las fotos IA aparecen en `Pictures/CamDroid`. En Android 8 y 9 se guardan en el directorio privado externo de la app.
 

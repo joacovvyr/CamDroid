@@ -56,18 +56,10 @@ class PortraitRenderer(context: Context) : GLSurfaceView(context), GLSurfaceView
         preserveEGLContextOnPause = true
     }
     @Synchronized fun submit(frame: Bitmap, mask: Bitmap) {
-        pendingMask?.recycle()
-        pendingMask = mask
-        if (pendingFrame == null) {
-            pendingFrame = frame
-        } else {
-            frame.recycle()
-        }
-        requestRender()
-    }
-    @Synchronized fun submitFrame(frame: Bitmap) {
         pendingFrame?.recycle()
+        pendingMask?.recycle()
         pendingFrame = frame
+        pendingMask = mask
         requestRender()
     }
     @Synchronized private fun takeFrame(): Pair<Bitmap?, Bitmap?>? {
