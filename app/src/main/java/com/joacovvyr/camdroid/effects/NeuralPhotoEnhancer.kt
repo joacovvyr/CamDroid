@@ -5,6 +5,11 @@ import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import android.graphics.Color
 import android.graphics.Matrix
+import android.graphics.RectF
+import com.google.android.gms.tasks.Tasks
+import com.google.mlkit.vision.common.InputImage
+import com.google.mlkit.vision.face.FaceDetection
+import com.google.mlkit.vision.face.FaceDetectorOptions
 import org.tensorflow.lite.DataType
 import org.tensorflow.lite.Interpreter
 import java.nio.ByteBuffer
@@ -12,10 +17,11 @@ import java.nio.ByteOrder
 import kotlin.math.max
 import kotlin.math.min
 import kotlin.math.sqrt
+import java.util.concurrent.TimeUnit
 
 /**
- * Offline, tiled x4 ESRGAN restoration. The model works on small overlapping tiles, while
- * the saved original JPEG is never decoded or modified by this class.
+ * Offline, tiled x4 ESRGAN restoration with a deliberately bounded residual. Detected faces
+ * retain only interpolation of the source pixels. The original JPEG is saved separately.
  */
 class NeuralPhotoEnhancer(private val context: Context) {
     private val maxPixels = 7680L * 4320L
@@ -39,6 +45,12 @@ class NeuralPhotoEnhancer(private val context: Context) {
         var output: Bitmap? = null
         var interpreter: Interpreter? = null
         try {
+            val faceRegions = try {
+                detectFaceRegions(source)
+            } catch (_: Exception) {
+                // If face protection is unavailable, do not run a generative model at all.
+                return faithfulUpscale(source)
+            }
             val upScale = min(4.0,
                 min(7680.0 / max(source.width, source.height),
                     sqrt(maxPixels.toDouble() / (source.width.toLong() * source.height))))
@@ -56,7 +68,6 @@ class NeuralPhotoEnhancer(private val context: Context) {
 
             val originalPixels = IntArray(source.width * source.height)
             source.getPixels(originalPixels, 0, source.width, 0, 0, source.width, source.height)
-            for (i in originalPixels.indices) originalPixels[i] = tone(originalPixels[i])
             output = Bitmap.createBitmap(outputWidth, outputHeight, Bitmap.Config.ARGB_8888)
 
             val model = context.assets.open("ESRGAN.tflite").use { it.readBytes() }
@@ -119,15 +130,17 @@ class NeuralPhotoEnhancer(private val context: Context) {
                     val neuralB = prediction.getFloat(offset + 8).toInt().coerceIn(0, 255)
                     val worldX = baseX * factor + x
                     val worldY = baseY * factor + y
-                    val original = bilinear(originalPixels, source.width, source.height,
-                        (worldX + 0.5f) * source.width / outputWidth - 0.5f,
-                        (worldY + 0.5f) * source.height / outputHeight - 0.5f)
-                    val light = (Color.red(original) + Color.green(original) + Color.blue(original)) / 765f
-                    val amount = 0.36f + (1f - light) * 0.19f
+                    val sourceX = (worldX + 0.5f) * source.width / outputWidth - 0.5f
+                    val sourceY = (worldY + 0.5f) * source.height / outputHeight - 0.5f
+                    val original = bilinear(originalPixels, source.width, source.height, sourceX, sourceY)
+                    val protected = faceProtection(faceRegions, sourceX, sourceY)
+                    val enhanced = tone(original)
+                    val detail = detailConfidence(originalPixels, source.width, source.height, sourceX, sourceY)
+                    val amount = 0.32f * detail * (1f - protected)
                     result[y * validWidth + x] = Color.rgb(
-                        mix(Color.red(original), neuralR, amount),
-                        mix(Color.green(original), neuralG, amount),
-                        mix(Color.blue(original), neuralB, amount))
+                        guardedChannel(Color.red(original), Color.red(enhanced), neuralR, amount, protected),
+                        guardedChannel(Color.green(original), Color.green(enhanced), neuralG, amount, protected),
+                        guardedChannel(Color.blue(original), Color.blue(enhanced), neuralB, amount, protected))
                 }
                 output.setPixels(result, 0, validWidth, baseX * factor, baseY * factor,
                     validWidth, validHeight)
@@ -143,6 +156,67 @@ class NeuralPhotoEnhancer(private val context: Context) {
             source.recycle()
             output?.recycle()
         }
+    }
+
+    private fun detectFaceRegions(source: Bitmap): List<RectF> {
+        val scale = min(1f, 1280f / max(source.width, source.height))
+        val preview = if (scale == 1f) source else Bitmap.createScaledBitmap(source,
+            max(1, (source.width * scale).toInt()), max(1, (source.height * scale).toInt()), true)
+        val detector = FaceDetection.getClient(FaceDetectorOptions.Builder()
+            .setPerformanceMode(FaceDetectorOptions.PERFORMANCE_MODE_ACCURATE)
+            .build())
+        try {
+            val faces = Tasks.await(detector.process(InputImage.fromBitmap(preview, 0)), 30, TimeUnit.SECONDS)
+            return faces.map { face ->
+                val box = face.boundingBox
+                val padX = box.width() * 0.35f
+                val padY = box.height() * 0.45f
+                RectF((box.left - padX) / scale, (box.top - padY) / scale,
+                    (box.right + padX) / scale, (box.bottom + padY) / scale)
+            }
+        } finally {
+            detector.close()
+            if (preview !== source) preview.recycle()
+        }
+    }
+
+    private fun faceProtection(regions: List<RectF>, x: Float, y: Float): Float {
+        var protection = 0f
+        for (region in regions) {
+            val fade = max(region.width(), region.height()) * 0.12f
+            val dx = max(max(region.left - x, x - region.right), 0f)
+            val dy = max(max(region.top - y, y - region.bottom), 0f)
+            protection = max(protection, 1f - max(dx, dy) / fade)
+        }
+        return protection.coerceIn(0f, 1f)
+    }
+
+    private fun detailConfidence(pixels: IntArray, width: Int, height: Int, x: Float, y: Float): Float {
+        val px = x.toInt().coerceIn(1, max(1, width - 2))
+        val py = y.toInt().coerceIn(1, max(1, height - 2))
+        val left = pixels[py * width + px - 1]
+        val right = pixels[py * width + min(px + 1, width - 1)]
+        val top = pixels[max(py - 1, 0) * width + px]
+        val bottom = pixels[min(py + 1, height - 1) * width + px]
+        val contrast = (kotlin.math.abs(Color.red(left) - Color.red(right)) +
+            kotlin.math.abs(Color.green(left) - Color.green(right)) +
+            kotlin.math.abs(Color.blue(left) - Color.blue(right)) +
+            kotlin.math.abs(Color.red(top) - Color.red(bottom)) +
+            kotlin.math.abs(Color.green(top) - Color.green(bottom)) +
+            kotlin.math.abs(Color.blue(top) - Color.blue(bottom))) / 6f
+        return ((contrast - 4f) / 18f).coerceIn(0f, 1f)
+    }
+
+    private fun guardedChannel(original: Int, toned: Int, neural: Int, amount: Float, protection: Float): Int {
+        val anchored = toned + (neural - toned).coerceIn(-20, 20) * amount
+        return mix(anchored.toInt(), original, protection)
+    }
+
+    private fun faithfulUpscale(source: Bitmap): Bitmap {
+        val scale = min(4.0, min(7680.0 / max(source.width, source.height),
+            sqrt(maxPixels.toDouble() / (source.width.toLong() * source.height))))
+        return Bitmap.createScaledBitmap(source, max(1, (source.width * scale).toInt()),
+            max(1, (source.height * scale).toInt()), true)
     }
 
     private fun decodeBounded(jpeg: ByteArray): Bitmap {

@@ -3,11 +3,12 @@ plugins { id("com.android.application"); id("org.jetbrains.kotlin.android") }
 android { namespace = "com.joacovvyr.camdroid"; compileSdk = 35
     compileOptions { sourceCompatibility = JavaVersion.VERSION_17; targetCompatibility = JavaVersion.VERSION_17 }
     kotlinOptions { jvmTarget = "17" }
-    defaultConfig { applicationId = "com.joacovvyr.camdroid"; minSdk = 26; targetSdk = 35; versionCode = 7; versionName = "0.7.0" }
+    defaultConfig { applicationId = "com.joacovvyr.camdroid"; minSdk = 26; targetSdk = 35; versionCode = 8; versionName = "0.8.0" }
 }
 
 dependencies {
     implementation("org.tensorflow:tensorflow-lite:2.16.1")
+    implementation("com.google.mlkit:face-detection:16.1.7")
     implementation("com.google.mlkit:segmentation-selfie:16.0.0-beta6")
     implementation("androidx.core:core-ktx:1.15.0")
     implementation("androidx.appcompat:appcompat:1.7.0")

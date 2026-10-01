@@ -247,7 +247,7 @@ class PortraitActivity : AppCompatActivity() {
             setOnClickListener { if (!frameReady || renderer.maskOnly || stillCapture == null) return@setOnClickListener; saving = true; isEnabled = false; takeHighResolutionPhoto() }
         }
         enhanceCapture = Button(this).apply {
-            text = "FOTO ORIGINAL + IA HASTA 8K"
+            text = "FOTO FIEL + IA HASTA 8K"
             isEnabled = false
             setOnClickListener {
                 if (!frameReady || stillCapture == null || saving) return@setOnClickListener
