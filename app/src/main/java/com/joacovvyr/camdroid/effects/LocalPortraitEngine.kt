@@ -5,6 +5,7 @@ import com.google.mlkit.vision.common.InputImage
 import com.google.mlkit.vision.segmentation.Segmentation
 import com.google.mlkit.vision.segmentation.selfie.SelfieSegmenterOptions
 import java.io.Closeable
+import java.nio.ByteOrder
 import java.util.concurrent.Executor
 
 /** Input is an upright bitmap. Output mask has the same orientation and normalized coordinates. */
@@ -14,13 +15,15 @@ interface PersonSegmenter : Closeable {
 
 /** Bundled model: no model download, API key, account or network connection. */
 class LocalPortraitEngine : PersonSegmenter {
+    // Keep the live model input small enough for the S22 to sustain it while
+    // preserving the full-resolution camera frame for preview and capture.
+    private val maxInferenceDimension = 480
     private val client = Segmentation.getClient(
         SelfieSegmenterOptions.Builder()
             .setDetectorMode(SelfieSegmenterOptions.STREAM_MODE)
             .enableRawSizeMask().build()
     )
     override fun process(frame: Bitmap, executor: Executor, result: (Bitmap?, Exception?) -> Unit) {
-        val maxInferenceDimension = 640
         val inferenceFrame = if (maxOf(frame.width, frame.height) > maxInferenceDimension) {
             val scale = maxInferenceDimension.toFloat() / maxOf(frame.width, frame.height).toFloat()
             Bitmap.createScaledBitmap(
@@ -36,15 +39,28 @@ class LocalPortraitEngine : PersonSegmenter {
             .addOnSuccessListener(executor) { mask ->
                 var rawMask: Bitmap? = null
                 try {
+                    val width = mask.width
+                    val height = mask.height
+                    if (width <= 0 || height <= 0) {
+                        throw IllegalStateException("ML Kit devolvió una máscara vacía")
+                    }
                     val buffer = mask.buffer
+                    val requiredBytes = width.toLong() * height.toLong() * Float.SIZE_BYTES
+                    val availableBytes = buffer.limit()
+                    if (requiredBytes > Int.MAX_VALUE || availableBytes < requiredBytes.toInt()) {
+                        throw IllegalStateException(
+                            "Máscara IA incompleta (${availableBytes} bytes para ${width}×${height})"
+                        )
+                    }
                     buffer.rewind()
-                    val pixels = IntArray(mask.width * mask.height)
+                    buffer.order(ByteOrder.nativeOrder())
+                    val pixels = IntArray(width * height)
                     for (i in pixels.indices) {
                         val confidence = buffer.float.coerceIn(0f, 1f)
                         val value = (confidence * 255).toInt()
                         pixels[i] = android.graphics.Color.rgb(value, value, value)
                     }
-                    val raw = Bitmap.createBitmap(pixels, mask.width, mask.height, Bitmap.Config.ARGB_8888)
+                    val raw = Bitmap.createBitmap(pixels, width, height, Bitmap.Config.ARGB_8888)
                     rawMask = raw
                     val output = if (raw.width == frame.width && raw.height == frame.height) {
                         rawMask = null
